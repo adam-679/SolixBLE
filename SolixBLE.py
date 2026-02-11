@@ -235,6 +235,16 @@ class SolixBLEDevice:
                 _LOGGER.exception(f"Error subscribing/negotiating with '{self.name}'!")
                 return False
 
+        # Send negotiation initiation requests until the device responds
+        while self._number_of_received_packets == 0:
+            await asyncio.sleep(3)
+            _LOGGER.debug("Sending negotiations initiation request...")
+            await self._client.write_gatt_char(
+                UUID_COMMAND, bytes.fromhex(NEGOTIATION_COMMAND_0)
+            )
+            _LOGGER.debug("Sent negotiation initiation request!")
+            await asyncio.sleep(3)
+
         # Wait for negotiations to finish and catch and print any errors
         try:
             async with asyncio.timeout(NEGOTIATION_TIMEOUT):
@@ -522,14 +532,6 @@ class SolixBLEDevice:
                 UUID_TELEMETRY, self._process_telemetry_update
             )
             _LOGGER.debug("Subscribed to notifications from device!")
-
-            # Then initiate negotiations
-            await asyncio.sleep(3)
-            _LOGGER.debug("Starting negotiations...")
-            await self._client.write_gatt_char(
-                UUID_COMMAND, bytes.fromhex(NEGOTIATION_COMMAND_0)
-            )
-            _LOGGER.debug("Sent negotiation initiation request!")
 
     async def _reconnect(self) -> None:
         """Re-connect to device and run state change callbacks on timeout/failure."""
