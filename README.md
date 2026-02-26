@@ -19,21 +19,26 @@ No pairing is required in order to receive telemetry data.
 
 - 🔋 Battery percentage
 - ⚡ Total Power In/Out
-- 🔌 AC Power In/Out (Exl DC on C1000)
-- 🚗 DC Power In/Out (Exl DC on C1000)
+- 🔌 AC Power In/Out
+- 🚗 DC Power In/Out (Exl C1000)
 - ⏰ AC/DC Timer value (Exl DC on C1000)
 - ⏲️ Time remaining to full/empty
 - ☀️ Solar Power In
-- 📱 USB Port Status (Not on C1000)
-- 💡 Light bar status (Not on C1000)
+- 💻 USB Port Power
+- 📱 USB Port Status (Exl C1000)
+- ⚙️ Software version
+- 🩺 Battery health (Exl C300)
+- 🌡️ Battery temperature
+- ↔️ Expansion batteries (Charge, Temperature, Health, Firmware)
+- 💡 Light bar status (Exl C1000)
 - 🔂 Simple structure
 - ✔️ More emojis than strictly necessary
 
 
 ## Supported Devices
 
-- C300X
-- C1000
+- C300(X)
+- C1000(X)
 - Maybe more? IDK
 
 

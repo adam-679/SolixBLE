@@ -1,0 +1,7 @@
+pytest
+pytest-asyncio
+pytest-cov
+bleak
+cryptography
+pycryptodome
+bleak-retry-connector
