@@ -1,5 +1,7 @@
-"""
-Tests for SolixBLE module.
+"""Tests for the parsing of a decrypted telemetry packet into device attributes.
+
+.. moduleauthor:: Harvey Lelliott (flip-dots) <harveylelliott@duck.com>
+
 """
 
 from typing import Any
