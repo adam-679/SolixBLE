@@ -97,3 +97,25 @@ class LightStatus(Enum):
 
     #: SOS mode. Not supported by all devices.
     SOS = 4
+
+
+class DisplayTimeout(Enum):
+    """Display timeout on device in seconds. Only specific values are allowed."""
+
+    #: The status of the display timeout is unknown.
+    UNKNOWN = -1
+
+    #: 20 seconds.
+    S20 = 20
+
+    #: 30 seconds.
+    S30 = 30
+
+    #: 60 seconds.
+    S60 = 60
+
+    #: 300 seconds (5m).
+    S300 = 300
+
+    #: 1800 seconds (30m).
+    S1800 = 1800
