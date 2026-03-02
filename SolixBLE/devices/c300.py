@@ -225,6 +225,15 @@ class C300(SolixBLEDevice):
             else DEFAULT_METADATA_BOOL
         )
 
+    # TODO Fix. b8 is not solar charging status, its input when AC charging
+    # @property
+    # def solar_port(self) -> PortStatus:
+    #     """Status of solar/dc port.
+
+    #     :returns: The status of the solar/dc input.
+    #     """
+    #     return PortStatus.from_input_only(self._parse_int("b8", begin=1))
+
     @property
     def temperature(self) -> int:
         """Temperature of the unit (C).

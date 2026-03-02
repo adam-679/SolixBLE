@@ -233,13 +233,14 @@ class C1000(SolixBLEDevice):
             else DEFAULT_METADATA_BOOL
         )
 
-    @property
-    def solar_port(self) -> PortStatus:
-        """Solar Port Status.
+    # TODO: Fix bc is not solar port status. It shows as output when AC charging
+    # @property
+    # def solar_port(self) -> PortStatus:
+    #     """Solar Port Status.
 
-        :returns: Status of the solar port.
-        """
-        return PortStatus(self._parse_int("bc", begin=1))
+    #     :returns: Status of the solar port.
+    #     """
+    #     return PortStatus.from_input_only(self._parse_int("bc", begin=1))
 
     @property
     def temperature(self) -> int:
