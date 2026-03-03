@@ -305,16 +305,17 @@ class C1000(SolixBLEDevice):
         """
         return self._parse_string("d0", begin=1)
 
-    @property
-    def dc_output(self) -> PortStatus:
-        """DC Port Status.
+    # TODO: D8 does not exist. Need to figure out what is DC output
+    # @property
+    # def dc_output(self) -> PortStatus:
+    #     """DC Port Status.
 
-        PortStatus.NOT_CONNECTED signifies off.
-        PortStatus.OUTPUT signifies on.
+    #     PortStatus.NOT_CONNECTED signifies off.
+    #     PortStatus.OUTPUT signifies on.
 
-        :returns: Status of the DC port.
-        """
-        return PortStatus(self._parse_int("d8", begin=1))
+    #     :returns: Status of the DC port.
+    #     """
+    #     return PortStatus(self._parse_int("d8", begin=1))
 
     async def turn_ac_on(self) -> None:
         """Turn the AC output on.
