@@ -62,8 +62,8 @@ class SolixBLEDevice:
 
         self._ble_device: BLEDevice = ble_device
         self._client: BleakClient | None = None
-        self._p46: bytes | None = None
-        self._p242: bytes | None = None
+        self._telemetry_payload_small: bytes | None = None
+        self._telemetry_payload_large: bytes | None = None
         self._data: dict[str, bytes] | None = None
         self._last_data_timestamp: datetime | None = None
         self._last_packet_timestamp: datetime | None = None
@@ -534,27 +534,33 @@ class SolixBLEDevice:
 
                         # Anker devices seem to split data across multiple
                         # packets so we need to wait until we have both
-                        # packets before we. can decrypt all of the data
-                        if len(payload) == 46:
-                            self._p46 = payload
+                        # packets before we can decrypt all of the data
+                        if len(payload) < 50:
+                            self._telemetry_payload_small = payload
 
                         # If we receive a big packet it invalidates the
                         # last small one since the big one comes before
                         # the small one
-                        if len(payload) == 242:
-                            self._p242 = payload
-                            self._p46 = None
+                        if len(payload) > 230:
+                            self._telemetry_payload_large = payload
+                            self._telemetry_payload_small = None
 
-                        if self._p46 is None or self._p242 is None:
+                        if (
+                            self._telemetry_payload_small is None
+                            or self._telemetry_payload_large is None
+                        ):
                             _LOGGER.debug("Missing other payload!")
                             return
 
-                        new_payload = self._p242 + self._p46
+                        new_payload = (
+                            self._telemetry_payload_large
+                            + self._telemetry_payload_small
+                        )
 
                         # If we are accepting the new payload we invalidate
                         # the partial payloads
-                        self._p242 = None
-                        self._p46 = None
+                        self._telemetry_payload_large = None
+                        self._telemetry_payload_small = None
 
                         _LOGGER.debug(f"Merged payload: {new_payload.hex()}")
                         decrypted_payload = self._decrypt_payload(new_payload)
@@ -959,8 +965,8 @@ class SolixBLEDevice:
             self._data = None
             self._last_data_timestamp = None
 
-        self._p46 = None
-        self._p242 = None
+        self._telemetry_payload_small = None
+        self._telemetry_payload_large = None
         self._shared_key = None
         self._iv = None
         self._last_packet_timestamp = None
