@@ -351,16 +351,12 @@ class C300DC(SolixBLEDevice):
         return self._parse_int("cb", begin=1)
 
     @property
-    def solar_port_active(self) -> bool:
+    def solar_port(self) -> PortStatus:
         """Solar Port Status.
 
         :returns: Status of the solar port.
         """
-        return (
-            bool(self._parse_int("cd", begin=1))
-            if self._data is not None
-            else DEFAULT_METADATA_BOOL
-        )
+        return PortStatus.from_input_only(self._parse_int("cd", begin=1))
 
     @property
     def dc_12v_auto_on(self) -> bool:
