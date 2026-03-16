@@ -488,10 +488,15 @@ class SolixBLEDevice:
 
     def _encrypt_payload(self, payload: bytes) -> bytes:
         """Encrypt telemetry packet using negotiated shared secret and IV."""
+
+        # Pad and encrypt payload
+        padder = PKCS7(128).padder()
+        padded_data = padder.update(payload)
+        padded_data += padder.finalize()
         cipher = AES.new(
             self._shared_secret[:16], AES.MODE_CBC, iv=self._shared_secret[16:]
         )
-        return cipher.encrypt(payload)
+        return cipher.encrypt(padded_data)
 
     async def _process_telemetry_packet(self, payload: bytes) -> None:
         """Process a telemetry packet from the device.
@@ -820,12 +825,7 @@ class SolixBLEDevice:
         _LOGGER.debug(
             f"Building packet with cmd: {cmd.hex()} and payload: {payload.hex()}"
         )
-
-        # Pad and encrypt payload
-        padder = PKCS7(128).padder()
-        padded_data = padder.update(payload)
-        padded_data += padder.finalize()
-        encrypted_payload = self._encrypt_payload(padded_data)
+        encrypted_payload = self._encrypt_payload(payload)
 
         packet = self._build_packet(bytes.fromhex("03000f"), cmd, encrypted_payload)
         _LOGGER.debug(f"Sending encrypted packet: {packet.hex()}")
