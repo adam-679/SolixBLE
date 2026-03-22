@@ -319,12 +319,12 @@ class C300DC(SolixBLEDevice):
         return self._parse_int("c5", begin=1)
 
     @property
-    def display_mode(self) -> int:
-        """Configured display mode.
+    def display_mode(self) -> LightStatus:
+        """Configured display backlight brightness.
 
-        :returns: Configured display mode or default int value.
+        :returns: Configured display backlight brightness.
         """
-        return self._parse_int("c7", begin=1)
+        return LightStatus(self._parse_int("c7", begin=1))
 
     @property
     def light(self) -> LightStatus:
