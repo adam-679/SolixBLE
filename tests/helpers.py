@@ -7,25 +7,13 @@
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Union
 from unittest import mock
 
 from bleak import BleakClient
 
-from SolixBLE import const
-
 _LOGGER = logging.getLogger(__name__)
-
-
-NEGOTIATION_RESPONSES: dict[str, Union[str, None]] = {
-    const.NEGOTIATION_COMMAND_0: "ff090e00030001080100a1010152",
-    const.NEGOTIATION_COMMAND_1: "ff091b00030001080300a10102a202fd00a30144a40101a50102ff",
-    const.NEGOTIATION_COMMAND_2: "ff093800030001082900a10103a2054553503332a307302e302e302e33a41041504339464530453237333030323735a506f49d8a104e0c9a",
-    const.NEGOTIATION_COMMAND_3: "ff090b00030001080500f2",
-    const.NEGOTIATION_COMMAND_4: "ff094d00030001082100a140b2ade5cac4f4a0c1307e44a0e9c5363cb21e4c8485ee324c23be949fa5d5929a75e57da3207c948a0c366ca9ea1ab2cb8e57d2d046a6ebefe5d96adb5d4cb35039",
-    const.NEGOTIATION_COMMAND_5: None,
-}
 
 
 @dataclass
@@ -36,17 +24,22 @@ class RequestResponse:
     the request is.
     """
 
-    expected: bytes
+    name: str
     """
-    The bytes expected by this request.
+    Name of request to produce more useful error messages.
     """
 
-    response: Union[bytes, None]
+    expected: Union[bytes, None]
+    """
+    The bytes expected by this request. Use none to accept any bytes.
+    """
+
+    response: list[bytes]
     """
     The bytes (if any) that should be sent in response to a matching request.
     """
 
-    called: bool
+    called: bool = field(default=False)
     """
     Has this request been fulfilled.
     """
@@ -147,7 +140,8 @@ class MockDevice:
 
         :param side_effect: Side effect to trigger (e.g exception).
         """
-
+        if self._establish is None:
+            raise ValueError("Context manager not active!")
         self._establish.side_effect = side_effect
 
     def allow_connect(self):
@@ -166,7 +160,9 @@ class MockDevice:
             for callback in dc_callbacks:
                 callback(bleak_client)
 
-    def expect_ordered(self, value: bytes, response: Union[bytes, None] = None):
+    def expect_ordered(
+        self, value: Union[bytes, None] = None, response: list[bytes] = []
+    ):
         """
         Expect an ordered request to be made to the mock device with
         the specified value and optionally respond with bytes.
@@ -174,10 +170,25 @@ class MockDevice:
         If an unexpected or out of order request is made an error will be
         raised.
 
-        :param value: Expected bytes value.
-        :param response: Optional bytes value to respond with.
+        :param value: Expected bytes value or None to accept any.
+        :param response: List of bytes to respond with.
         """
-        self._assertions.append(RequestResponse(value, response, False))
+        self._assertions.append(
+            RequestResponse(
+                name=f"num {len(self._assertions)}", expected=value, response=response
+            )
+        )
+
+    def expect_ordered_all(self, requests: list[RequestResponse]):
+        """
+        Expect an list of requests.
+
+        If an unexpected or out of order request is made an error will be
+        raised.
+
+        :param request_response: Expected request and/or response.
+        """
+        self._assertions.extend(requests)
 
     async def start_notify(self, uuid: bytes, callback: Callable):
         """
@@ -192,7 +203,7 @@ class MockDevice:
             if client is self._current_mock_bleak_client:
                 n_callbacks.append(callback)
 
-    async def send_data(self, data: bytes) -> None:
+    async def send_data(self, data: list[bytes]) -> None:
         """
         Write the specified data as a notification to all clients
         registered callbacks.
@@ -202,11 +213,12 @@ class MockDevice:
 
         for client, _, n_callbacks in self._mock_bleak_clients:
             for callback in n_callbacks:
-                _LOGGER.debug(
-                    f"Mock device sending '{data.hex()}' to client '{client}' for callback '{callback}'..."
-                )
-                # Handle is not used
-                await callback(None, data)
+                for packet in data:
+                    _LOGGER.debug(
+                        f"Mock device sending '{packet.hex()}' to client '{client}' for callback '{callback}'..."
+                    )
+                    # Handle is not used
+                    await callback(None, packet)
 
                 # Wait between sending
                 await asyncio.sleep(0.1)
@@ -236,10 +248,11 @@ class MockDevice:
                 False
             ), f"Received an unexpected request '{data.hex()}'. Number: {self._position+1}, Num expected: {len(self._assertions)}"
 
-        # Assert it matches
-        assert (
-            request_response.expected == data
-        ), f"Expected bytes {request_response.expected.hex()}' but got '{data.hex()}'!"
+        if request_response.expected is not None:
+            # Assert it matches
+            assert (
+                request_response.expected == data
+            ), f"Expected bytes {request_response.expected.hex()}' for request '{request_response.name}' ({self._position+1}) but got '{data.hex()}'!"
 
         # Increment position
         self._position = self._position + 1
@@ -262,7 +275,7 @@ class MockDevice:
         for i, item in enumerate(self._assertions):
             assert (
                 item.called
-            ), f"Request {i} with expected bytes '{item.expected.hex()}' was not called!"
+            ), f"Request '{item.name}' ({i}) with expected bytes '{item.expected.hex()}' was not called!"
 
     async def __aexit__(self, *exc):
         """

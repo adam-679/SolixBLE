@@ -73,8 +73,7 @@ class SolixBLEDevice:
         self._auto_reconnect_task: asyncio.Task | None = None
         self._disconnect_event: asyncio.Event = asyncio.Event()
         self._connection_attempts: int = 0
-        self._shared_key: bytes | None = None
-        self._iv: bytes | None = None
+        self._shared_secret: bytes | None = None
 
     def add_callback(self, function: Callable[[], None]) -> None:
         """Register a callback to be run on state updates.
@@ -94,6 +93,14 @@ class SolixBLEDevice:
         """
         self._state_changed_callbacks.remove(function)
 
+    async def _initiate_negotiations(self) -> None:
+        """Send the negotiation initiation command."""
+        await self._client.write_gatt_char(
+            UUID_COMMAND,
+            bytes.fromhex(NEGOTIATION_COMMAND_0),
+            response=True,
+        )
+
     async def connect(self, max_attempts: int = 3, run_callbacks: bool = True) -> bool:
         """Connect to device.
 
@@ -108,12 +115,8 @@ class SolixBLEDevice:
         try:
 
             # If we have an old client get rid of it
-            if self._client is not None and self._client.is_connected:
-                _LOGGER.debug(
-                    f"Disposing of old client '{self._client}' in order to connect to '{self.name}'!"
-                )
-                await self._client.disconnect()
-                self._client = None
+            if self._client is not None:
+                await self._dispose_of_client()
 
             # Reset negotiated details but keep any data
             self._reset_session(reset_data=False)
@@ -170,11 +173,7 @@ class SolixBLEDevice:
                         _LOGGER.debug(
                             f"Sending negotiation initiation request to '{self.name}'..."
                         )
-                        await self._client.write_gatt_char(
-                            UUID_COMMAND,
-                            bytes.fromhex(NEGOTIATION_COMMAND_0),
-                            response=True,
-                        )
+                        await self._initiate_negotiations()
 
                     # Wait at this long to see if we get any response to
                     # our initial request in stage 0. This weird layout
@@ -218,13 +217,13 @@ class SolixBLEDevice:
         if self._auto_reconnect_task is not None:
             self._auto_reconnect_task.cancel()
 
+        # If there is a client disconnect and throw it away
+        if self._client is not None:
+            await self._dispose_of_client()
+
+        # Reset session
         self._connection_attempts = 0
         self._reset_session()
-
-        # If there is a client disconnect and throw it away
-        if self._client:
-            await self._client.disconnect()
-            self._client = None
 
     @property
     def connected(self) -> bool:
@@ -247,12 +246,7 @@ class SolixBLEDevice:
 
         :returns: True/False if session has been negotiated and connected.
         """
-        return (
-            self.connected
-            and self._shared_key is not None
-            and self._iv is not None
-            and self._negotiation_timestamp is not None
-        )
+        return self.connected and self._shared_secret is not None
 
     @property
     def available(self) -> bool:
@@ -363,48 +357,88 @@ class SolixBLEDevice:
 
         return packet_pattern, packet_cmd, packet_payload
 
-    def _parse_payload(self, payload: bytearray) -> dict[str, bytes]:
-        """Parse payload bytes into parameters."""
+    def _parse_payload(self, payload: bytearray | bytes) -> dict[str, bytes]:
+        """
+        Parse payload bytes into parameters.
+
+        Payloads contain a list of parameters and these parameters
+        have a format of: <id 1B> <len 1-2B> <type 1B> <data nB>.
+
+        If an error occurs when decoding a parameter it prevents all
+        further parameters from being parsed and logs an exception,
+        but the successfully parsed parameters (if any) will be returned.
+
+        :param payload: Payload to parse into parameters.
+        :returns: Dictionary mapping parameter ids (a1, a2, ...) to data.
+        """
+
+        def _verbose_pop(data: bytearray, length: int, name: str) -> bytes:
+            """
+            Pop specified number of bytes from bytearray and log if error.
+
+            :param data: Data to be popped.
+            :param length: Number of bytes to pop and return.
+            :param name: Name of value being popped to put in logs if error.
+            :raises IndexError: If popping fails.
+            """
+
+            # Copy of bytes to use in error message if needed
+            data_copy = bytes(data)
+
+            # Bytes extracted so far
+            new_bytes = bytes([])
+
+            try:
+                # Pop length bytes from data and return
+                for _ in range(length):
+                    new_bytes = new_bytes + bytes([data.pop(0)])
+                return new_bytes
+
+            # Build error message
+            except IndexError as e:
+                message = (
+                    f"Error extracting {name} (len={length}) from '{data_copy.hex()}'"
+                    f" (len={len(data_copy)}) at index {len(new_bytes)}. We extracted:"
+                    f" '{new_bytes.hex()}' but expected {length - len(data_copy)}"
+                    f" more bytes!"
+                )
+                _LOGGER.exception(message)
+                raise IndexError(message) from e
 
         parsed_data: dict[str, bytes] = {}
         remaining_data = bytearray(payload)
 
-        # Packets sometimes start with 00 and we must strip that
+        # Payloads sometimes start with 00 and we must strip that
         if remaining_data.startswith(bytes.fromhex("00")):
-            remaining_data.pop(0)
+            _LOGGER.debug("Stripped 00 from start of payload")
+            _verbose_pop(remaining_data, 1, "special 00 header")
 
         while len(remaining_data) != 0:
             try:
                 # Extract param id (e.g a1, a2, ...)
-                param_id = bytes([remaining_data.pop(0)]).hex()
+                param_id = _verbose_pop(remaining_data, 1, "param_id").hex()
 
                 # Sometimes there is just a param_id with no length or values
-                # and then padding after that. This has been observed during
-                # the optional stage 6 negotiation stage that only sometimes
-                # seems to happen with the C300X (~ 1/20 chance).
-                #
-                # If we have reached PKCS7 padding then we have
-                # reached the end of the payload
-                if len(remaining_data) < 16 and remaining_data == bytearray(
-                    len(remaining_data) * len(remaining_data).to_bytes(1)
-                ):
+                if len(remaining_data) == 0:
                     parsed_data[param_id] = bytes()
                     break
 
-                param_len = remaining_data.pop(0)
-                param_data = bytes([remaining_data.pop(0) for _ in range(0, param_len)])
-                parsed_data[param_id] = param_data
+                # Extract encoded length of parameter
+                param_len = int.from_bytes(
+                    _verbose_pop(remaining_data, 1, f"param_len (id={param_id})")
+                )
 
-                # If we have reached PKCS7 padding then we have
-                # reached the end of the payload
-                if len(remaining_data) < 16 and remaining_data == bytearray(
-                    len(remaining_data) * len(remaining_data).to_bytes(1)
-                ):
-                    break
+                # Extract data/body from parameter
+                param_data = _verbose_pop(
+                    remaining_data, param_len, f"param_data (id={param_id})"
+                )
+                parsed_data[param_id] = param_data
 
             except IndexError:
                 _LOGGER.exception(
-                    f"Unexpected end of packet! Data may be missing or invalid! Payload: '{payload.hex()}'"
+                    f"Unexpected end of packet! Data may be missing or invalid!"
+                    f" Extracted so far: '{self._parameters_to_str(parsed_data)}'."
+                    f" Payload: '{payload.hex()}'"
                 )
 
         return parsed_data
@@ -444,12 +478,74 @@ class SolixBLEDevice:
 
     def _decrypt_payload(self, payload: bytes) -> bytes:
         """Decrypt telemetry packet using negotiated shared secret and IV."""
-        cipher = AES.new(self._shared_key, AES.MODE_CBC, iv=self._iv)
-        return cipher.decrypt(payload)
+        cipher = AES.new(
+            self._shared_secret[:16], AES.MODE_CBC, iv=self._shared_secret[16:]
+        )
+        decrypted = cipher.decrypt(payload)
+        unpadder = PKCS7(128).unpadder()
+        unpadded_data = unpadder.update(decrypted)
+        return unpadded_data + unpadder.finalize()
 
-    async def _process_telemetry(
-        self, cmd: bytes, parameters: dict[str, bytes]
-    ) -> None:
+    def _encrypt_payload(self, payload: bytes) -> bytes:
+        """Encrypt telemetry packet using negotiated shared secret and IV."""
+
+        # Pad and encrypt payload
+        padder = PKCS7(128).padder()
+        padded_data = padder.update(payload)
+        padded_data += padder.finalize()
+        cipher = AES.new(
+            self._shared_secret[:16], AES.MODE_CBC, iv=self._shared_secret[16:]
+        )
+        return cipher.encrypt(padded_data)
+
+    async def _process_telemetry_packet(self, payload: bytes) -> None:
+        """Process a telemetry packet from the device.
+
+        This performs the default processing of telemetry packets in which
+        telemetry payloads are spread across multiple packets. This is
+        overridden for devices which do not use multi-packet payloads for
+        telemetry.
+        """
+
+        # Anker devices seem to split data across multiple
+        # packets so we need to wait until we have both
+        # packets before we can decrypt all of the data
+        if len(payload) < 50:
+            self._telemetry_payload_small = payload
+
+        # If we receive a big packet it invalidates the
+        # last small one since the big one comes before
+        # the small one
+        elif len(payload) > 230:
+            self._telemetry_payload_large = payload
+            self._telemetry_payload_small = None
+
+        else:
+            _LOGGER.warning(
+                f"Telemetry payload has an unexpected length of {len(payload)}!"
+            )
+
+        if (
+            self._telemetry_payload_small is None
+            or self._telemetry_payload_large is None
+        ):
+            _LOGGER.debug("Missing other payload!")
+            return
+
+        new_payload = self._telemetry_payload_large + self._telemetry_payload_small
+
+        # If we are accepting the new payload we invalidate
+        # the partial payloads
+        self._telemetry_payload_large = None
+        self._telemetry_payload_small = None
+
+        _LOGGER.debug(f"Merged payload: {new_payload.hex()}")
+        decrypted_payload = self._decrypt_payload(new_payload)
+        _LOGGER.debug(f"Decrypted payload: {decrypted_payload.hex()}")
+        parameters = self._parse_payload(decrypted_payload)
+        return await self._process_telemetry(parameters)
+
+    async def _process_telemetry(self, parameters: dict[str, bytes]) -> None:
         """Process telemetry data from the device."""
 
         state_changed = self._data is None or parameters != self._data
@@ -524,63 +620,31 @@ class SolixBLEDevice:
                 return await self._process_negotiation(cmd, payload)
 
             # Encrypted messages
-            case "03010f":
+            case "03010f" | "030111":
 
                 match cmd.hex():
 
                     # Telemetry messages
-                    case "c402":
+                    case "c402" | "4300":
                         _LOGGER.debug("Received telemetry message!")
-
-                        # Anker devices seem to split data across multiple
-                        # packets so we need to wait until we have both
-                        # packets before we can decrypt all of the data
-                        if len(payload) < 50:
-                            self._telemetry_payload_small = payload
-
-                        # If we receive a big packet it invalidates the
-                        # last small one since the big one comes before
-                        # the small one
-                        elif len(payload) > 230:
-                            self._telemetry_payload_large = payload
-                            self._telemetry_payload_small = None
-
-                        else:
-                            _LOGGER.warning(
-                                f"Telemetry payload has an unexpected length of {len(payload)}!"
-                            )
-
-                        if (
-                            self._telemetry_payload_small is None
-                            or self._telemetry_payload_large is None
-                        ):
-                            _LOGGER.debug("Missing other payload!")
-                            return
-
-                        new_payload = (
-                            self._telemetry_payload_large
-                            + self._telemetry_payload_small
-                        )
-
-                        # If we are accepting the new payload we invalidate
-                        # the partial payloads
-                        self._telemetry_payload_large = None
-                        self._telemetry_payload_small = None
-
-                        _LOGGER.debug(f"Merged payload: {new_payload.hex()}")
-                        decrypted_payload = self._decrypt_payload(new_payload)
-                        _LOGGER.debug(f"Decrypted payload: {decrypted_payload.hex()}")
-                        parameters = self._parse_payload(decrypted_payload)
-                        return await self._process_telemetry(cmd, parameters)
+                        return await self._process_telemetry_packet(payload)
 
                     # Unknown messages
                     case _:
                         _LOGGER.debug(f"Received unknown message of type: {cmd.hex()}")
                         try:
 
-                            # If the payload is one byte too short try putting the
+                            # If the payload is one byte too short and we are
+                            # using the default AES (CBC) then try putting the
                             # last byte of the cmd in front of it
-                            if len(payload) % 16 == 15:
+                            if (
+                                len(payload) % 16 == 15
+                                and self._decrypt_payload
+                                is SolixBLEDevice._decrypt_payload
+                            ):
+                                _LOGGER.debug(
+                                    "Using special trick of embedded part of CMD in payload..."
+                                )
                                 payload = cmd[1].to_bytes() + payload
 
                             decrypted_payload = self._decrypt_payload(payload)
@@ -682,12 +746,8 @@ class SolixBLEDevice:
                     bytes.fromhex(PRIVATE_KEY), byteorder="big"
                 )
                 private_key = derive_private_key(private_value, SECP256R1())
-                shared_secret = private_key.exchange(ECDH(), device_public_key)
-                self._shared_key = shared_secret[:16]
-                self._iv = shared_secret[16:]
-                _LOGGER.debug(f"Shared secret: {shared_secret.hex()}")
-                _LOGGER.debug(f"AES key: {self._shared_key.hex()}")
-                _LOGGER.debug(f"AES IV: {self._iv.hex()}")
+                self._shared_secret = private_key.exchange(ECDH(), device_public_key)
+                _LOGGER.debug(f"Shared secret: {self._shared_secret.hex()}")
 
                 _LOGGER.debug("Sending stage 5 response message...")
                 return await self._client.write_gatt_char(
@@ -740,34 +800,34 @@ class SolixBLEDevice:
         new_payload = payload + bytes.fromhex("fe0503") + new_timestamp
         await self._send_encrypted_packet(cmd, new_payload)
 
+    def _build_packet(self, pattern: bytes, cmd: bytes, payload: bytes) -> bytes:
+        """
+        Build a packet to be send to a device.
+
+        Packet format: <HEADER 2B> <LENGTH 2B> <PATTERN 3B> <CMD 2B> <PAYLOAD bB> <CHECKSUM 1B>.
+
+        :param pattern: Pattern of packet (e.g encrypted, negotiation, etc).
+        :param cmd: Command in packet (e.g telemetry, power on, etc).
+        :param payload: Payload of command (e.g a1...).
+        :returns: Packet bytes ready to be sent.
+        """
+
+        # Calculate length of message
+        length = 2 + 2 + 3 + 2 + len(payload) + 1
+        length_bytes = length.to_bytes(length=2, byteorder="little")
+
+        # Build packet
+        packet = bytes.fromhex("ff09") + length_bytes + pattern + cmd + payload
+        return packet + self._checksum(packet)
+
     async def _send_encrypted_packet(self, cmd: bytes, payload: bytes) -> None:
         """Send an encrypted packet using negotiated shared secret and IV."""
         _LOGGER.debug(
             f"Building packet with cmd: {cmd.hex()} and payload: {payload.hex()}"
         )
+        encrypted_payload = self._encrypt_payload(payload)
 
-        # Pad payload
-        padder = PKCS7(128).padder()
-        padded_data = padder.update(payload)
-        padded_data += padder.finalize()
-
-        # Encrypt payload
-        cipher = AES.new(self._shared_key, AES.MODE_CBC, iv=self._iv)
-        encrypted_payload = cipher.encrypt(padded_data)
-
-        # Calculate length of message
-        length = 2 + 2 + 3 + 2 + len(encrypted_payload) + 1
-        length_bytes = length.to_bytes(length=2, byteorder="little")
-
-        # Build packet
-        packet = (
-            bytes.fromhex("ff09")
-            + length_bytes
-            + bytes.fromhex("03000f")
-            + cmd
-            + encrypted_payload
-        )
-        packet = packet + self._checksum(packet)
+        packet = self._build_packet(bytes.fromhex("03000f"), cmd, encrypted_payload)
         _LOGGER.debug(f"Sending encrypted packet: {packet.hex()}")
 
         # Send packet
@@ -963,7 +1023,18 @@ class SolixBLEDevice:
         # Trigger disconnection event
         self._disconnect_event.set()
 
-    def _reset_session(self, reset_data: bool = True):
+    async def _dispose_of_client(self) -> None:
+        """Dispose of current bleak client."""
+        client = self._client
+        self._client = None
+        try:
+            await client.disconnect()
+        except Exception:
+            _LOGGER.exception(
+                f"Exception raised when disposing of bleak client '{client}'!"
+            )
+
+    def _reset_session(self, reset_data: bool = True) -> None:
         """Reset negotiated variables and data and futures."""
 
         if reset_data:
@@ -972,8 +1043,7 @@ class SolixBLEDevice:
 
         self._telemetry_payload_small = None
         self._telemetry_payload_large = None
-        self._shared_key = None
-        self._iv = None
+        self._shared_secret = None
         self._last_packet_timestamp = None
         self._negotiation_timestamp = None
         self._packet_futures: dict[bytes, list[asyncio.Future]] = {}
