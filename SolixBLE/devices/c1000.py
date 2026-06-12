@@ -163,6 +163,14 @@ class C1000(SolixBLEDevice):
         return self._parse_int("aa", begin=1)
 
     @property
+    def dc_power_out(self) -> int:
+        """DC Power Out.
+
+        :returns: DC power out or default int value.
+        """
+        return self._parse_int("ad", begin=1)
+
+    @property
     def solar_power_in(self) -> int:
         """Solar Power In.
 
@@ -231,6 +239,17 @@ class C1000(SolixBLEDevice):
         :returns: Status of the AC port.
         """
         return PortStatus(self._parse_int("bb", begin=1))
+
+    @property
+    def dc_output(self) -> PortStatus:
+        """DC Port Status.
+
+        PortStatus.NOT_CONNECTED signifies off.
+        PortStatus.OUTPUT signifies on.
+
+        :returns: Status of the DC port.
+        """
+        return PortStatus(self._parse_int("cc", begin=1))
 
     @property
     def temperature(self) -> int:
