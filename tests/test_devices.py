@@ -272,6 +272,82 @@ from tests.helpers import MockDevice
             id="c1000_dc_load",
         ),
         pytest.param(
+            C1000,
+            "a10131d9020101de020101",
+            {
+                "display_mode": LightStatus.LOW,
+                "is_display_on": True,
+            },
+            id="c1000_display_low",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d9020102de020101",
+            {
+                "display_mode": LightStatus.MEDIUM,
+                "is_display_on": True,
+            },
+            id="c1000_display_medium",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d9020103de020101",
+            {
+                "display_mode": LightStatus.HIGH,
+                "is_display_on": True,
+            },
+            id="c1000_display_high",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d9020103de020100",
+            {
+                "display_mode": LightStatus.OFF,
+                "is_display_on": False,
+            },
+            id="c1000_display_off",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303021400",
+            {
+                "display_timeout": 20,
+            },
+            id="c1000_display_timeout_20s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303021e00",
+            {
+                "display_timeout": 30,
+            },
+            id="c1000_display_timeout_30s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303023c00",
+            {
+                "display_timeout": 60,
+            },
+            id="c1000_display_timeout_60s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303022c01",
+            {
+                "display_timeout": 300,
+            },
+            id="c1000_display_timeout_300s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303020807",
+            {
+                "display_timeout": 1800,
+            },
+            id="c1000_display_timeout_1800s",
+        ),
+        pytest.param(
             C1000G2,
             "a10134a221062011415043444b39363146333734303032393000054131373633060201010100a30b0400000000b0040058dc00a41b0400000000b0043201000000000000001e00010000000000640103a506041700646400a60a04000000000000ab2a64a70704000000010000a80404000000aa0404000000ab0404000000ac0404000000ae0404000000b20404000000d91a0400001964010000000100000000000000000000000000000000da18040000000000000000000001e00164057f00000000000000dc06040000000000f91d0406020101050005000000000005000500050300010000000000020200fa150401010101001f0300000000000000000000000000fd0e0031373634363538323735393838fe0503638c2e69f0",
             {
