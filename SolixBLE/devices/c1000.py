@@ -262,6 +262,14 @@ class C1000(SolixBLEDevice):
         return LightStatus(self._parse_int("dc", begin=1))
 
     @property
+    def display_timeout(self) -> int:
+        """Configured display timeout in seconds.
+
+        :returns: Configured display timeout or default int value.
+        """
+        return self._parse_int("d3", begin=1)
+
+    @property
     def display_mode(self) -> LightStatus:
         """Configured display backlight brightness.
 
