@@ -4,7 +4,7 @@ setlocal EnableDelayedExpansion
 ::::::::::::::::
 :: Constants  ::
 ::::::::::::::::
-set "FRIDA_VERSION=17.8.2"
+set "FRIDA_VERSION=17.11.0"
 set "UBER_APK_SIGNER_VERSION=1.3.0"
 
 ::::::::::::::::::::::::::::::::::::

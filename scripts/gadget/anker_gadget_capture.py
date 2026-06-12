@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Timed rooted Frida capture for the Anker app."""
+"""Timed Frida Gadget capture for a patched Anker app."""
 
 from __future__ import annotations
 
@@ -8,19 +8,20 @@ import datetime as dt
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
-FRIDA_VERSION = "17.12.0"
 DEFAULT_PACKAGE = "com.anker.charging"
-DEFAULT_PROCESS = "Anker"
-DEFAULT_LOCAL_PORT = 27043
-DEFAULT_REMOTE_PORT = 27042
+DEFAULT_PROCESS = "Gadget"
+DEFAULT_LOCAL_PORT = 49152
+DEFAULT_REMOTE_PORT = 49152
 DEFAULT_ATTACH_DELAY = 0.8
+DEFAULT_REOPEN_DELAY = 5.0
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SCRIPT = REPO_ROOT / "scripts" / "frida_filtered.js"
-DEFAULT_LOG_DIR = REPO_ROOT / "scripts" / "logs"
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_SCRIPT = SCRIPT_DIR / "frida.js"
+DEFAULT_LOG_DIR = SCRIPT_DIR / "logs"
 
 
 def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -57,25 +58,12 @@ def list_adb_devices() -> list[str]:
     return devices
 
 
-def ensure_tools() -> None:
-    missing = [
-        tool for tool in ("adb", "frida", "frida-ps") if shutil.which(tool) is None
-    ]
-    if missing:
-        raise SystemExit(f"Missing required tool(s): {', '.join(missing)}")
-
-    version = run(["frida", "--version"]).stdout.strip()
-    if version != FRIDA_VERSION:
+def check_device(device: str, devices: list[str] | None = None) -> None:
+    devices = list_adb_devices() if devices is None else devices
+    if device not in devices:
         raise SystemExit(
-            f"Frida CLI is {version}, expected {FRIDA_VERSION}. "
-            "Install matching frida-tools, then rerun this script."
+            f"ADB device '{device}' is not connected. Connected devices: {', '.join(devices) or 'none'}"
         )
-
-
-def adb(
-    device: str, *args: str, check: bool = True
-) -> subprocess.CompletedProcess[str]:
-    return run(["adb", "-s", device, *args], check=check)
 
 
 def choose_device(device: str | None, *, no_prompt: bool) -> str:
@@ -108,34 +96,19 @@ def choose_device(device: str | None, *, no_prompt: bool) -> str:
     return chosen
 
 
-def check_device(device: str, devices: list[str] | None = None) -> None:
-    devices = list_adb_devices() if devices is None else devices
-    if device not in devices:
-        raise SystemExit(
-            f"ADB device '{device}' is not connected. Connected devices: {', '.join(devices) or 'none'}"
-        )
+def ensure_tools() -> None:
+    missing = [tool for tool in ("adb", "frida") if shutil.which(tool) is None]
+    if missing:
+        raise SystemExit(f"Missing required tool(s): {', '.join(missing)}")
 
 
-def check_root(device: str) -> None:
-    result = adb(device, "shell", "su", "-c", "id", check=False)
-    if result.returncode != 0 or "uid=0" not in result.stdout:
-        raise SystemExit(
-            "ADB shell root is not available. Grant shell root in Magisk, then rerun."
-        )
-
-
-def forward_frida(device: str, local_port: int, remote_port: int) -> None:
-    adb(device, "forward", f"tcp:{local_port}", f"tcp:{remote_port}")
-    result = run(["frida-ps", "-H", f"127.0.0.1:{local_port}"], check=False)
-    if result.returncode != 0:
-        raise SystemExit(
-            "Could not reach undetected-frida-server through ADB forwarding. "
-            "Check the Magisk module is installed/running, then rerun."
-        )
+def adb(
+    device: str, *args: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    return run(["adb", "-s", device, *args], check=check)
 
 
 def launch_app(device: str, package: str) -> None:
-    adb(device, "shell", "am", "force-stop", package, check=False)
     adb(
         device,
         "shell",
@@ -148,28 +121,18 @@ def launch_app(device: str, package: str) -> None:
     )
 
 
-def frida_process_names(local_port: int) -> set[str]:
-    result = run(["frida-ps", "-H", f"127.0.0.1:{local_port}"], check=False)
-    if result.returncode != 0:
-        return set()
+def schedule_reopen(device: str, package: str, delay: float) -> threading.Timer | None:
+    if delay <= 0:
+        return None
 
-    names = set()
-    for line in result.stdout.splitlines():
-        parts = line.split(maxsplit=1)
-        if len(parts) == 2 and parts[0].isdigit():
-            names.add(parts[1].strip())
-    return names
+    def reopen() -> None:
+        say("Re-opening Anker for Gadget after first attach...")
+        launch_app(device, package)
 
-
-def wait_for_process(local_port: int, process_name: str, timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if process_name in frida_process_names(local_port):
-            return
-        time.sleep(0.1)
-    raise SystemExit(
-        f"Frida cannot see process '{process_name}'. Try a slightly different --attach-delay."
-    )
+    timer = threading.Timer(delay, reopen)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -186,13 +149,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Do not prompt for label/device. Uses label 'capture' if --label is omitted.",
     )
     parser.add_argument("--attach-delay", type=float, default=DEFAULT_ATTACH_DELAY)
+    parser.add_argument("--reopen-delay", type=float, default=DEFAULT_REOPEN_DELAY)
     parser.add_argument("--process-name", default=DEFAULT_PROCESS)
     parser.add_argument("--package", default=DEFAULT_PACKAGE)
     parser.add_argument("--script", type=Path, default=DEFAULT_SCRIPT)
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
     parser.add_argument("--local-port", type=int, default=DEFAULT_LOCAL_PORT)
     parser.add_argument("--remote-port", type=int, default=DEFAULT_REMOTE_PORT)
-    parser.add_argument("--process-timeout", type=float, default=1.0)
     return parser
 
 
@@ -201,7 +164,6 @@ def main() -> int:
 
     ensure_tools()
     device = choose_device(args.device, no_prompt=args.no_prompt)
-    check_root(device)
 
     label = prompt_label(args.label, no_prompt=args.no_prompt)
     args.log_dir.mkdir(parents=True, exist_ok=True)
@@ -210,13 +172,16 @@ def main() -> int:
 
     say(f"Device: {device}")
     say(f"Delay:  {args.attach_delay:.2f}s")
+    say(f"Reopen: {args.reopen_delay:.2f}s")
     say(f"Log:    {log_path}")
 
-    forward_frida(device, args.local_port, args.remote_port)
-    say("Launching Anker...")
+    adb(device, "forward", f"tcp:{args.local_port}", f"tcp:{args.remote_port}")
+    adb(device, "shell", "am", "force-stop", args.package, check=False)
+
+    say("Launching patched Anker...")
     launch_app(device, args.package)
     time.sleep(args.attach_delay)
-    wait_for_process(args.local_port, args.process_name, args.process_timeout)
+    schedule_reopen(device, args.package, args.reopen_delay)
 
     command = [
         "frida",
@@ -230,7 +195,7 @@ def main() -> int:
         str(log_path),
     ]
 
-    say("Attaching during splash. Use Anker, then press Ctrl-C or type exit.")
+    say("Attaching to Gadget. Use Anker after it re-opens, then Ctrl-C or type exit.")
     return subprocess.call(command)
 
 
