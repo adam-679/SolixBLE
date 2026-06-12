@@ -98,8 +98,8 @@ python scripts/gadget/anker_gadget_capture.py --device <adb-serial> --attach-del
 ```
 
 For discovering which app action maps to which BLE command, start with the
-low-noise command trace. It records Flutter BLE method-channel calls plus final
-BLE writes:
+low-noise command trace. It records Flutter BLE method-channel calls, selected
+Dart command-builder arguments/returns, and final BLE writes:
 
 ```sh
 python scripts/gadget/anker_gadget_capture.py --device <adb-serial> --script scripts/gadget/frida_command_trace.js --label "feature name"
@@ -109,6 +109,8 @@ The useful output lines are:
 
 ```text
 [FLUTTER BLE METHOD] ...
+[DART ENTER ZXCommandTransformer...] ...
+[DART LEAVE ZXCommandTransformer...] ...
 [BLE WRITE] uuid=... command=... packet_prefix=... data=...
 [ASM POINTER] source=... method=... identifier=... command=... asm_search_terms=...
 ```
@@ -116,6 +118,9 @@ The useful output lines are:
 Use those lines with the decompiled Dart ASM staged under
 `scripts/gadget/data/blutter/`. Search the ASM for the printed
 `asm_search_terms`, `identifier`, and `command`, then inspect the matching code.
+The Dart hooks depend on the app build used for the local Blutter output; if the
+Anker app is updated, refresh the offsets from `libapp.so` before relying on
+the decoded command-builder lines.
 
 For deeper encrypted setter work, use the broader pipeline trace script. It keeps
 BLE writes but also hooks the Flutter encryption bridge and nearby app helper
