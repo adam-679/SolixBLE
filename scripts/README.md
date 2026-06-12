@@ -10,6 +10,8 @@ local and sanitize any excerpts before sharing or committing fixtures.
 - `root/`: stock Anker app capture through a rooted device and
   undetected-frida-server.
 - `gadget/`: patched Anker app capture through Frida Gadget.
+- `gadget/data/blutter/`: local-only Dart ASM/decompile staging. Put `asm/`,
+  `pp.txt`, and `objs.txt` there for ASM inspection.
 - `logs/`: legacy ignored log location from earlier helpers.
 
 ## Rooted Frida Capture
@@ -95,10 +97,30 @@ To tune timing:
 python scripts/gadget/anker_gadget_capture.py --device <adb-serial> --attach-delay 0.8 --reopen-delay 5
 ```
 
-For encrypted setter work, use the pipeline trace script. It keeps BLE writes
-but also hooks the Flutter encryption bridge and nearby app helper classes, which
-is where recent Anker builds appear to prepare command payloads before the final
-encrypted BLE packet:
+For discovering which app action maps to which BLE command, start with the
+low-noise command trace. It records Flutter BLE method-channel calls plus final
+BLE writes:
+
+```sh
+python scripts/gadget/anker_gadget_capture.py --device <adb-serial> --script scripts/gadget/frida_command_trace.js --label "feature name"
+```
+
+The useful output lines are:
+
+```text
+[FLUTTER BLE METHOD] ...
+[BLE WRITE] uuid=... command=... packet_prefix=... data=...
+[ASM POINTER] source=... method=... identifier=... command=... asm_search_terms=...
+```
+
+Use those lines with the decompiled Dart ASM staged under
+`scripts/gadget/data/blutter/`. Search the ASM for the printed
+`asm_search_terms`, `identifier`, and `command`, then inspect the matching code.
+
+For deeper encrypted setter work, use the broader pipeline trace script. It keeps
+BLE writes but also hooks the Flutter encryption bridge and nearby app helper
+classes. It is intentionally noisy and should be used after the command trace
+has narrowed the feature:
 
 ```sh
 python scripts/gadget/anker_gadget_capture.py --device <adb-serial> --script scripts/gadget/frida_ble_pipeline.js --label "recharge power pipeline"
@@ -115,5 +137,6 @@ uv run --with frida-tools scripts/gadget/anker_gadget_capture.py --device <adb-s
 ## Output
 
 Raw logs are written to `scripts/root/logs/<label>_<timestamp>.log` or
-`scripts/gadget/logs/<label>_<timestamp>.log`. Those directories are ignored by
-git.
+`scripts/gadget/logs/<label>_<timestamp>.log`. Keep logs, downloaded tools, APKs,
+and decompiled app output local-only through `.git/info/exclude`, not tracked
+`.gitignore`.
