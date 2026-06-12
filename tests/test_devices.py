@@ -101,6 +101,7 @@ from tests.helpers import MockDevice
                 "battery_health": 100,
                 "battery_health_expansion": 0,
                 "num_expansion": 0,
+                "light": LightStatus.UNKNOWN,
                 "serial_number": "APC9FE0E27300275",
             },
             id="c1000_idle",
@@ -718,6 +719,102 @@ async def test_values(
         assert (
             getattr(device, class_property) == expected_value
         ), f"Mismatch for property '{class_property}'!"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        LightStatus.OFF,
+        LightStatus.LOW,
+        LightStatus.MEDIUM,
+        LightStatus.HIGH,
+        LightStatus.SOS,
+    ],
+)
+async def test_c1000_light_value(mode: LightStatus) -> None:
+    """Test C1000 light status parsing from telemetry."""
+    device = C1000(MOCK_BLE_DEVICE)
+    parameters = device._parse_payload(bytes.fromhex(f"dc0201{mode.value:02x}"))
+    await device._process_telemetry(parameters)
+
+    assert device.light is mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        LightStatus.OFF,
+        LightStatus.LOW,
+        LightStatus.MEDIUM,
+        LightStatus.HIGH,
+        LightStatus.SOS,
+    ],
+)
+async def test_c1000_set_light_mode_payload(mode: LightStatus) -> None:
+    """Test C1000 light control payloads."""
+    device = C1000(MOCK_BLE_DEVICE)
+    sent: dict[str, bytes] = {}
+
+    async def fake_send_command(cmd: bytes, payload: bytes) -> None:
+        sent["cmd"] = cmd
+        sent["payload"] = payload
+
+    device._send_command = fake_send_command
+
+    await device.set_light_mode(mode)
+
+    assert sent["cmd"].hex() == "404f"
+    assert sent["payload"].hex() == f"a10121a20201{mode.value:02x}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        LightStatus.OFF,
+        LightStatus.LOW,
+        LightStatus.MEDIUM,
+        LightStatus.HIGH,
+        LightStatus.SOS,
+    ],
+)
+async def test_c1000_set_light_mode_confirmed(mode: LightStatus) -> None:
+    """Test C1000 confirmed light controls use fresh telemetry."""
+    device = C1000(MOCK_BLE_DEVICE)
+    sent_modes: list[LightStatus] = []
+
+    async def fake_set_light_mode(requested_mode: LightStatus) -> None:
+        sent_modes.append(requested_mode)
+
+    async def fake_get_status_update() -> dict[str, bytes]:
+        return {"dc": bytes([1, mode.value])}
+
+    device.set_light_mode = fake_set_light_mode
+    device.get_status_update = fake_get_status_update
+
+    assert await device.set_light_mode_confirmed(mode) is True
+    assert sent_modes == [mode]
+    assert device.light is mode
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_light_mode_confirmed_mismatch() -> None:
+    """Test C1000 light confirmation fails when telemetry disagrees."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    async def fake_set_light_mode(requested_mode: LightStatus) -> None:
+        assert requested_mode is LightStatus.HIGH
+
+    async def fake_get_status_update() -> dict[str, bytes]:
+        return {"dc": bytes([1, LightStatus.LOW.value])}
+
+    device.set_light_mode = fake_set_light_mode
+    device.get_status_update = fake_get_status_update
+
+    assert await device.set_light_mode_confirmed(LightStatus.HIGH) is False
+    assert device.light is LightStatus.LOW
 
 
 @pytest.mark.asyncio

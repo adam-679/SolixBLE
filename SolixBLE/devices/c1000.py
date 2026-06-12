@@ -252,6 +252,16 @@ class C1000(SolixBLEDevice):
         return PortStatus(self._parse_int("cc", begin=1))
 
     @property
+    def light(self) -> LightStatus:
+        """Status of the LED light bar.
+
+        :returns: Status of the LED light bar.
+        """
+        if self._data is None or "dc" not in self._data:
+            return LightStatus.UNKNOWN
+        return LightStatus(self._parse_int("dc", begin=1))
+
+    @property
     def temperature(self) -> int:
         """Temperature of the unit (C).
 
@@ -369,6 +379,21 @@ class C1000(SolixBLEDevice):
             cmd=bytes.fromhex(CMD_LIGHT_MODE),
             payload=bytes.fromhex(PAYLOAD_LIGHT_MODE) + mode.value.to_bytes(),
         )
+
+    async def set_light_mode_confirmed(self, mode: LightStatus) -> bool:
+        """Set the light mode and confirm it with fresh telemetry.
+
+        :param mode: Mode to set light bar to.
+        :raises ValueError: If requested mode is invalid.
+        :raises ConnectionError: If not connected to device.
+        :raises TimeoutError: If no telemetry response is received.
+        :raises BleakError: If command transmission fails.
+        :returns: True when telemetry reports the requested light mode.
+        """
+        await self.set_light_mode(mode)
+        parameters = await self.get_status_update()
+        await self._process_telemetry(parameters)
+        return self.light is mode
 
     async def set_display_mode(self, mode: LightStatus) -> None:
         """Set the status/mode of the LCD display.
