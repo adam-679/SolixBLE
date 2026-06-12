@@ -18,7 +18,7 @@ from ..states import GridStatus, LightMode, SBPowerCutoff, SBUsageMode, Temperat
 class MaxLoadSB2(Enum):
     """
     Maximum output power of the Solarbank 2 in watts.
-    
+
     Only specific values are allowed.
     """
 
@@ -381,7 +381,7 @@ class Solarbank2(SolixBLEDevice):
     def max_load(self) -> MaxLoadSB2:
         """
         Maximum output power in watts.
-        
+
         Maximum legal value depends on country of operation.
 
         :returns: Maximum load as a MaxLoadSB2 enum value.
@@ -444,4 +444,3 @@ class Solarbank2(SolixBLEDevice):
             if self._data is not None
             else DEFAULT_METADATA_BOOL
         )
-

@@ -13,7 +13,13 @@ from ..const import (
     DEFAULT_METADATA_STRING,
 )
 from ..device import SolixBLEDevice
-from ..states import ChargingStatus, LightStatus, PortStatus, TemperatureUnit, PortOverload
+from ..states import (
+    ChargingStatus,
+    LightStatus,
+    PortStatus,
+    TemperatureUnit,
+    PortOverload,
+)
 
 
 class C300DC(SolixBLEDevice):
