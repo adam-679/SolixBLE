@@ -24,6 +24,7 @@ CMD_DISPLAY_TIMEOUT = "4046"
 CMD_DISPLAY_ON_OFF = "4052"
 CMD_AC_RECHARGE_POWER = "4044"
 CMD_ULTRAFAST_RECHARGE = "405e"
+CMD_DC_TIMER = "4043"
 
 PAYLOAD_ON = "a10121a2020101"
 PAYLOAD_OFF = "a10121a2020100"
@@ -31,9 +32,11 @@ PAYLOAD_LIGHT_MODE = "a10121a20201"
 PAYLOAD_TIMEOUT_TIME = "a10121a20302"
 PAYLOAD_AC_RECHARGE_POWER = "a10144a202"
 PAYLOAD_ULTRAFAST_RECHARGE = "a1015ea201"
+PAYLOAD_TIMER_SECONDS = "a10121a20503"
 
 MIN_AC_RECHARGE_POWER = 200
 MAX_AC_RECHARGE_POWER = 1000
+MAX_TIMER_SECONDS = 23 * 60 * 60 + 55 * 60
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -68,6 +71,26 @@ class C1000(SolixBLEDevice):
             and self.ac_timer_remaining != 0
         ):
             return datetime.now() + timedelta(seconds=self.ac_timer_remaining)
+
+    @property
+    def dc_timer_remaining(self) -> int:
+        """Time remaining on DC timer.
+
+        :returns: Seconds remaining or default int value.
+        """
+        return self._parse_int("a3", begin=1)
+
+    @property
+    def dc_timer(self) -> datetime | None:
+        """Timestamp of DC timer.
+
+        :returns: Timestamp of when DC timer expires or None.
+        """
+        if (
+            self.dc_timer_remaining != DEFAULT_METADATA_INT
+            and self.dc_timer_remaining != 0
+        ):
+            return datetime.now() + timedelta(seconds=self.dc_timer_remaining)
 
     @property
     def hours_remaining(self) -> float:
@@ -422,6 +445,24 @@ class C1000(SolixBLEDevice):
             cmd=bytes.fromhex(CMD_ULTRAFAST_RECHARGE),
             payload=bytes.fromhex(PAYLOAD_ULTRAFAST_RECHARGE)
             + (2 if enabled else 0).to_bytes(),
+        )
+
+    async def set_dc_timer(self, seconds: int) -> None:
+        """Set the DC output timer.
+
+        :param seconds: Number of seconds until the DC output turns off. Use 0 to disable.
+        :raises ValueError: If seconds is outside the encodable range.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        if not 0 <= seconds <= MAX_TIMER_SECONDS:
+            raise ValueError(
+                f"Output timer must be between 0 and {MAX_TIMER_SECONDS} seconds"
+            )
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_DC_TIMER),
+            payload=bytes.fromhex(PAYLOAD_TIMER_SECONDS)
+            + seconds.to_bytes(length=4, byteorder="little", signed=False),
         )
 
     async def turn_display_on(self) -> None:

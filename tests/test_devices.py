@@ -95,6 +95,11 @@ async def assert_c1000_command_packet(
             "405e",
             "a1015ea20100",
         ),
+        (
+            lambda device: device.set_dc_timer(27600),
+            "4043",
+            "a10121a20503d06b0000",
+        ),
     ],
 )
 async def test_c1000_command_packet(monkeypatch, action, cmd, payload_hex):
@@ -112,6 +117,18 @@ async def test_c1000_set_ac_recharge_power_rejects_out_of_range():
 
     with pytest.raises(ValueError):
         await device.set_ac_recharge_power(1001)
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_output_timer_rejects_out_of_range():
+    """Test C1000 output timers validate encodable second values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    with pytest.raises(ValueError):
+        await device.set_dc_timer(-1)
+
+    with pytest.raises(ValueError):
+        await device.set_dc_timer(86101)
 
 
 @pytest.mark.asyncio
