@@ -5,4 +5,3 @@ SolixBLE.egg-info
 docs/_build
 .venv/
 scripts/logs/
-.DS_Store
