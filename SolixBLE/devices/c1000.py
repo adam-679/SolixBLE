@@ -262,6 +262,30 @@ class C1000(SolixBLEDevice):
         return LightStatus(self._parse_int("dc", begin=1))
 
     @property
+    def display_mode(self) -> LightStatus:
+        """Configured display backlight brightness.
+
+        :returns: Configured display backlight brightness.
+        """
+        if self._data is None:
+            return LightStatus.UNKNOWN
+        if not self.is_display_on:
+            return LightStatus.OFF
+        return LightStatus(self._parse_int("d9", begin=1))
+
+    @property
+    def is_display_on(self) -> bool:
+        """Display on status.
+
+        :returns: Status of the display.
+        """
+        return (
+            bool(self._parse_int("de", begin=1))
+            if self._data is not None
+            else DEFAULT_METADATA_BOOL
+        )
+
+    @property
     def temperature(self) -> int:
         """Temperature of the unit (C).
 
