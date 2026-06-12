@@ -22,11 +22,18 @@ CMD_LIGHT_MODE = "404f"
 CMD_DISPLAY_MODE = "404c"
 CMD_DISPLAY_TIMEOUT = "4046"
 CMD_DISPLAY_ON_OFF = "4052"
+CMD_AC_RECHARGE_POWER = "4044"
+CMD_ULTRAFAST_RECHARGE = "405e"
 
 PAYLOAD_ON = "a10121a2020101"
 PAYLOAD_OFF = "a10121a2020100"
 PAYLOAD_LIGHT_MODE = "a10121a20201"
 PAYLOAD_TIMEOUT_TIME = "a10121a20302"
+PAYLOAD_AC_RECHARGE_POWER = "a10144a202"
+PAYLOAD_ULTRAFAST_RECHARGE = "a1015ea201"
+
+MIN_AC_RECHARGE_POWER = 200
+MAX_AC_RECHARGE_POWER = 1000
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -459,6 +466,38 @@ class C1000(SolixBLEDevice):
             cmd=bytes.fromhex(CMD_DISPLAY_TIMEOUT),
             payload=bytes.fromhex(PAYLOAD_TIMEOUT_TIME)
             + timeout.value.to_bytes(length=2, byteorder="little", signed=False),
+        )
+
+    async def set_ac_recharge_power(self, watts: int) -> None:
+        """Set the AC recharge input power limit.
+
+        :param watts: Recharge power limit in watts.
+        :raises ValueError: If watts is outside the supported device range.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        if not MIN_AC_RECHARGE_POWER <= watts <= MAX_AC_RECHARGE_POWER:
+            raise ValueError(
+                "AC recharge power must be between "
+                f"{MIN_AC_RECHARGE_POWER} and {MAX_AC_RECHARGE_POWER} watts"
+            )
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_AC_RECHARGE_POWER),
+            payload=bytes.fromhex(PAYLOAD_AC_RECHARGE_POWER)
+            + watts.to_bytes(length=2, byteorder="little", signed=False),
+        )
+
+    async def set_ultrafast_recharge(self, enabled: bool) -> None:
+        """Set UltraFast AC recharging mode.
+
+        :param enabled: Enable or disable UltraFast AC recharging.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_ULTRAFAST_RECHARGE),
+            payload=bytes.fromhex(PAYLOAD_ULTRAFAST_RECHARGE)
+            + (2 if enabled else 0).to_bytes(),
         )
 
     async def turn_display_on(self) -> None:

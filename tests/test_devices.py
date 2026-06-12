@@ -26,6 +26,7 @@ from SolixBLE import (
     SolixBLEDevice,
     TemperatureUnit,
 )
+from SolixBLE.const import BASE_TIMESTAMP
 from SolixBLE.devices.solarbank2 import MaxLoadSB2
 from SolixBLE.states import GridStatus, LightMode, SBPowerCutoff, SBUsageMode
 from tests.const import (
@@ -34,6 +35,83 @@ from tests.const import (
     NEGOTIATION_RESPONSES_SOLIX,
 )
 from tests.helpers import MockDevice
+
+
+class ConnectedClient:
+    """Minimal connected BLE client for command-packet tests."""
+
+    is_connected = True
+
+    def __init__(self) -> None:
+        self.writes: list[tuple[str, bytes]] = []
+
+    async def write_gatt_char(self, char_specifier: str, data: bytes) -> None:
+        self.writes.append((char_specifier, data))
+
+
+async def assert_c1000_command_packet(
+    monkeypatch, action, cmd_hex: str, payload_hex: str
+):
+    """Assert a C1000 command sends the expected encrypted packet payload."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = bytes.fromhex(
+        "00112233445566778899aabbccddeeff0102030405060708090a0b0c0d0e0f10"
+    )
+    device._negotiation_timestamp = 100.0
+    monkeypatch.setattr("SolixBLE.device.time.time", lambda: 105.9)
+
+    await action(device)
+
+    assert len(client.writes) == 1
+    _, packet = client.writes[0]
+    pattern, cmd, encrypted_payload = device._split_packet(packet)
+    decrypted_payload = device._decrypt_payload(encrypted_payload)
+    timestamp = (
+        int.from_bytes(bytes.fromhex(BASE_TIMESTAMP), byteorder="little") + 5
+    ).to_bytes(length=4, byteorder="little")
+    assert pattern == bytes.fromhex("03000f")
+    assert cmd == bytes.fromhex(cmd_hex)
+    assert decrypted_payload == bytes.fromhex(payload_hex + "fe0503") + timestamp
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action,cmd,payload_hex",
+    [
+        (
+            lambda device: device.set_ac_recharge_power(200),
+            "4044",
+            "a10144a202c800",
+        ),
+        (
+            lambda device: device.set_ultrafast_recharge(True),
+            "405e",
+            "a1015ea20102",
+        ),
+        (
+            lambda device: device.set_ultrafast_recharge(False),
+            "405e",
+            "a1015ea20100",
+        ),
+    ],
+)
+async def test_c1000_command_packet(monkeypatch, action, cmd, payload_hex):
+    """Test C1000 control command payload and packet wrapping."""
+    await assert_c1000_command_packet(monkeypatch, action, cmd, payload_hex)
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_ac_recharge_power_rejects_out_of_range():
+    """Test C1000 AC recharge power validates encodable watt values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    with pytest.raises(ValueError):
+        await device.set_ac_recharge_power(199)
+
+    with pytest.raises(ValueError):
+        await device.set_ac_recharge_power(1001)
 
 
 @pytest.mark.asyncio
