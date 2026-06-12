@@ -11,16 +11,16 @@ import subprocess
 import time
 from pathlib import Path
 
-FRIDA_VERSION = "17.12.0"
+FRIDA_VERSION = "17.11.0"
 DEFAULT_PACKAGE = "com.anker.charging"
 DEFAULT_PROCESS = "Anker"
 DEFAULT_LOCAL_PORT = 27043
 DEFAULT_REMOTE_PORT = 27042
 DEFAULT_ATTACH_DELAY = 0.8
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SCRIPT = REPO_ROOT / "scripts" / "frida_filtered.js"
-DEFAULT_LOG_DIR = REPO_ROOT / "scripts" / "logs"
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_SCRIPT = SCRIPT_DIR / "frida_filtered.js"
+DEFAULT_LOG_DIR = SCRIPT_DIR / "logs"
 
 
 def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:

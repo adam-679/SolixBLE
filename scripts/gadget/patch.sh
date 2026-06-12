@@ -16,7 +16,7 @@ set -euxo pipefail
 # Constants #
 #############
 
-FRIDA_VERSION="17.8.2"
+FRIDA_VERSION="17.11.0"
 
 UBER_APK_SIGNER_VERSION="1.3.0"
 
@@ -49,7 +49,7 @@ command -v frida >/dev/null 2>&1 || { echo >&2 "frida is required!"; exit 1; }
 echo "Setting up folders..."
 
 # The current folder
-WORKING_FOLDER=$(pwd)
+WORKING_FOLDER="$(cd "$(dirname "$0")" && pwd)"
 
 # Folder to put all data in
 DATA_FOLDER="${WORKING_FOLDER}/data"
@@ -85,12 +85,19 @@ mkdir -p $FRIDA_FOLDER
 #######################
 echo "Downloading dependencies/tools"
 
-cd $FRIDA_FOLDER && wget "https://github.com/zer0def/undetected-frida/releases/download/${FRIDA_VERSION}/undetected-frida-gadget-${FRIDA_VERSION}-android-arm.so.xz"
-cd $FRIDA_FOLDER && wget "https://github.com/zer0def/undetected-frida/releases/download/${FRIDA_VERSION}/undetected-frida-gadget-${FRIDA_VERSION}-android-arm64.so.xz"
-cd $FRIDA_FOLDER && unxz "undetected-frida-gadget-${FRIDA_VERSION}-android-arm.so.xz"
-cd $FRIDA_FOLDER && unxz "undetected-frida-gadget-${FRIDA_VERSION}-android-arm64.so.xz"
+if [ ! -f "${FRIDA_FOLDER}/undetected-frida-gadget-${FRIDA_VERSION}-android-arm.so" ]; then
+  cd $FRIDA_FOLDER && wget -nc "https://github.com/zer0def/undetected-frida/releases/download/${FRIDA_VERSION}/undetected-frida-gadget-${FRIDA_VERSION}-android-arm.so.xz"
+  cd $FRIDA_FOLDER && unxz -f "undetected-frida-gadget-${FRIDA_VERSION}-android-arm.so.xz"
+fi
 
-cd $TOOLS_FOLDER && wget "https://github.com/patrickfav/uber-apk-signer/releases/download/v${UBER_APK_SIGNER_VERSION}/uber-apk-signer-${UBER_APK_SIGNER_VERSION}.jar"
+if [ ! -f "${FRIDA_FOLDER}/undetected-frida-gadget-${FRIDA_VERSION}-android-arm64.so" ]; then
+  cd $FRIDA_FOLDER && wget -nc "https://github.com/zer0def/undetected-frida/releases/download/${FRIDA_VERSION}/undetected-frida-gadget-${FRIDA_VERSION}-android-arm64.so.xz"
+  cd $FRIDA_FOLDER && unxz -f "undetected-frida-gadget-${FRIDA_VERSION}-android-arm64.so.xz"
+fi
+
+if [ ! -f "${TOOLS_FOLDER}/uber-apk-signer-${UBER_APK_SIGNER_VERSION}.jar" ]; then
+  cd $TOOLS_FOLDER && wget -nc "https://github.com/patrickfav/uber-apk-signer/releases/download/v${UBER_APK_SIGNER_VERSION}/uber-apk-signer-${UBER_APK_SIGNER_VERSION}.jar"
+fi
 
 
 ########################
@@ -143,20 +150,18 @@ echo "Re-packaging and re-signing APK..."
 apktool b -o "${APK_PATCHED_FOLDER}/base.apk" ${APK_DECOMPILED_FOLDER}
 
 # Re-sign APKs
-java -jar "${TOOLS_FOLDER}/uber-apk-signer-${UBER_APK_SIGNER_VERSION}.jar" -o $APK_SIGNED_FOLDER --allowResign --apks \
-   "${APK_PATCHED_FOLDER}/base.apk" \
-   "${APK_SOURCE_FOLDER}/split_config.arm64_v8a.apk" \
-   "${APK_SOURCE_FOLDER}/split_config.en.apk" \
-   "${APK_SOURCE_FOLDER}/split_config.xxhdpi.apk" \
-   "${APK_SOURCE_FOLDER}/split_flutter_assets_pack.apk"
+SIGN_APKS=("${APK_PATCHED_FOLDER}/base.apk")
+for apk in "${APK_SOURCE_FOLDER}"/*.apk; do
+  if [ "$(basename "$apk")" != "base.apk" ]; then
+    SIGN_APKS+=("$apk")
+  fi
+done
+
+java -jar "${TOOLS_FOLDER}/uber-apk-signer-${UBER_APK_SIGNER_VERSION}.jar" -o $APK_SIGNED_FOLDER --allowResign --apks "${SIGN_APKS[@]}"
 
 # Uninstall existing Anker app
 adb -s $DEVICE uninstall com.anker.charging
 
 # Install patched APKs
-adb -s $DEVICE install-multiple \
-    "${APK_SIGNED_FOLDER}/base-aligned-debugSigned.apk" \
-    "${APK_SIGNED_FOLDER}/split_config.arm64_v8a-aligned-debugSigned.apk" \
-    "${APK_SIGNED_FOLDER}/split_config.en-aligned-debugSigned.apk" \
-    "${APK_SIGNED_FOLDER}/split_config.xxhdpi-aligned-debugSigned.apk" \
-    "${APK_SIGNED_FOLDER}/split_flutter_assets_pack-aligned-debugSigned.apk"
+SIGNED_APKS=("${APK_SIGNED_FOLDER}"/*-aligned-debugSigned.apk)
+adb -s $DEVICE install-multiple "${SIGNED_APKS[@]}"
