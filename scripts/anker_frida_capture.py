@@ -11,7 +11,6 @@ import subprocess
 import time
 from pathlib import Path
 
-
 FRIDA_VERSION = "17.12.0"
 DEFAULT_PACKAGE = "com.anker.charging"
 DEFAULT_PROCESS = "Anker"
@@ -25,7 +24,9 @@ DEFAULT_LOG_DIR = REPO_ROOT / "scripts" / "logs"
 
 
 def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.run(
+        args, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
 
 
 def say(message: str) -> None:
@@ -57,7 +58,9 @@ def list_adb_devices() -> list[str]:
 
 
 def ensure_tools() -> None:
-    missing = [tool for tool in ("adb", "frida", "frida-ps") if shutil.which(tool) is None]
+    missing = [
+        tool for tool in ("adb", "frida", "frida-ps") if shutil.which(tool) is None
+    ]
     if missing:
         raise SystemExit(f"Missing required tool(s): {', '.join(missing)}")
 
@@ -69,7 +72,9 @@ def ensure_tools() -> None:
         )
 
 
-def adb(device: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def adb(
+    device: str, *args: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     return run(["adb", "-s", device, *args], check=check)
 
 
@@ -84,7 +89,9 @@ def choose_device(device: str | None, *, no_prompt: bool) -> str:
     if no_prompt:
         if len(devices) == 1:
             return devices[0]
-        raise SystemExit(f"Multiple ADB devices connected. Pass --device. Devices: {', '.join(devices)}")
+        raise SystemExit(
+            f"Multiple ADB devices connected. Pass --device. Devices: {', '.join(devices)}"
+        )
     if len(devices) == 1:
         say(f"Using ADB device: {devices[0]}")
         say(f"Next time: --device {devices[0]}")
@@ -112,7 +119,9 @@ def check_device(device: str, devices: list[str] | None = None) -> None:
 def check_root(device: str) -> None:
     result = adb(device, "shell", "su", "-c", "id", check=False)
     if result.returncode != 0 or "uid=0" not in result.stdout:
-        raise SystemExit("ADB shell root is not available. Grant shell root in Magisk, then rerun.")
+        raise SystemExit(
+            "ADB shell root is not available. Grant shell root in Magisk, then rerun."
+        )
 
 
 def forward_frida(device: str, local_port: int, remote_port: int) -> None:
@@ -127,7 +136,16 @@ def forward_frida(device: str, local_port: int, remote_port: int) -> None:
 
 def launch_app(device: str, package: str) -> None:
     adb(device, "shell", "am", "force-stop", package, check=False)
-    adb(device, "shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
+    adb(
+        device,
+        "shell",
+        "monkey",
+        "-p",
+        package,
+        "-c",
+        "android.intent.category.LAUNCHER",
+        "1",
+    )
 
 
 def frida_process_names(local_port: int) -> set[str]:
@@ -149,13 +167,19 @@ def wait_for_process(local_port: int, process_name: str, timeout: float) -> None
         if process_name in frida_process_names(local_port):
             return
         time.sleep(0.1)
-    raise SystemExit(f"Frida cannot see process '{process_name}'. Try a slightly different --attach-delay.")
+    raise SystemExit(
+        f"Frida cannot see process '{process_name}'. Try a slightly different --attach-delay."
+    )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--device", help="ADB device serial, e.g. from `adb devices -l`.")
-    parser.add_argument("--label", help="Log filename prefix. If omitted, prompts interactively.")
+    parser.add_argument(
+        "--device", help="ADB device serial, e.g. from `adb devices -l`."
+    )
+    parser.add_argument(
+        "--label", help="Log filename prefix. If omitted, prompts interactively."
+    )
     parser.add_argument(
         "--no-prompt",
         action="store_true",
