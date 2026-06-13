@@ -4,6 +4,7 @@
 
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -18,6 +19,7 @@ from ..states import DisplayTimeout, LightStatus, PortStatus
 
 CMD_AC_OUTPUT = "404a"
 CMD_DC_OUTPUT = "404b"
+CMD_STATUS_UPDATE = "4040"
 CMD_LIGHT_MODE = "404f"
 CMD_DISPLAY_MODE = "404c"
 CMD_DISPLAY_TIMEOUT = "4046"
@@ -28,6 +30,7 @@ CMD_DC_TIMER = "4043"
 
 PAYLOAD_ON = "a10121a2020101"
 PAYLOAD_OFF = "a10121a2020100"
+PAYLOAD_STATUS_UPDATE = "a10121"
 PAYLOAD_LIGHT_MODE = "a10121a20201"
 PAYLOAD_TIMEOUT_TIME = "a10121a20302"
 PAYLOAD_AC_RECHARGE_POWER = "a10144a202"
@@ -40,6 +43,10 @@ MAX_TIMER_SECONDS = 23 * 60 * 60 + 55 * 60
 
 _LOGGER = logging.getLogger(__name__)
 
+C1000_CONTROL_TELEMETRY_KEYS = {"d3", "d9", "dc", "de", "dd"}
+C1000_WORK_INFO_KEYS = {"a4", "b0", "bf"}
+_CONTROL_REFRESH_DEBOUNCE_SECONDS = 0.2
+
 
 class C1000(SolixBLEDevice):
     """
@@ -51,6 +58,79 @@ class C1000(SolixBLEDevice):
     """
 
     _EXPECTED_TELEMETRY_LENGTH: int = 253
+
+    def __init__(self, ble_device) -> None:
+        super().__init__(ble_device)
+        self._control_refresh_debounce_task: asyncio.Task | None = None
+        self._control_refresh_in_flight = False
+
+    async def disconnect(self) -> None:
+        """Disconnect and cancel any pending control-status refresh."""
+        if self._control_refresh_debounce_task is not None:
+            self._control_refresh_debounce_task.cancel()
+            self._control_refresh_debounce_task = None
+        await super().disconnect()
+
+    async def connect(self, max_attempts: int = 3, run_callbacks: bool = True) -> bool:
+        """Connect to the C1000 and request a full status snapshot."""
+        connected = await super().connect(
+            max_attempts=max_attempts, run_callbacks=run_callbacks
+        )
+        if not connected:
+            return False
+
+        try:
+            await self._process_telemetry(await self.get_status_update())
+        except Exception:
+            _LOGGER.debug("Unable to seed C1000 status after connect", exc_info=True)
+        return True
+
+    async def _process_telemetry(self, parameters: dict[str, bytes]) -> None:
+        """Process C1000 telemetry, merging partial updates when needed."""
+        if self._is_partial_telemetry(parameters):
+            await self._process_partial_telemetry(parameters)
+            if self._should_schedule_control_refresh(parameters):
+                self._schedule_control_status_refresh()
+            return
+        await super()._process_telemetry(parameters)
+
+    def _is_partial_telemetry(self, parameters: dict[str, bytes]) -> bool:
+        return (
+            bool(parameters)
+            and self._data is not None
+            and len(parameters) < len(self._data)
+        )
+
+    def _parse_known_int(
+        self, key: str, begin: int = None, end: int = None, signed: bool = False
+    ) -> int:
+        if self._data is None or key not in self._data:
+            return DEFAULT_METADATA_INT
+        return self._parse_int(key, begin=begin, end=end, signed=signed)
+
+    def _should_schedule_control_refresh(self, parameters: dict[str, bytes]) -> bool:
+        """Return true when work-info fragments omit control telemetry keys."""
+        if not parameters:
+            return False
+        if C1000_CONTROL_TELEMETRY_KEYS & parameters.keys():
+            return False
+        return bool(C1000_WORK_INFO_KEYS & parameters.keys())
+
+    def _schedule_control_status_refresh(self) -> None:
+        """Debounce background polls for light/display state after physical changes."""
+        if self._control_refresh_debounce_task is not None:
+            self._control_refresh_debounce_task.cancel()
+
+        async def debounced_refresh() -> None:
+            try:
+                await asyncio.sleep(_CONTROL_REFRESH_DEBOUNCE_SECONDS)
+                await self._refresh_control_status()
+            except asyncio.CancelledError:
+                raise
+
+        self._control_refresh_debounce_task = asyncio.get_running_loop().create_task(
+            debounced_refresh()
+        )
 
     @property
     def ac_timer_remaining(self) -> int:
@@ -129,7 +209,7 @@ class C1000(SolixBLEDevice):
         :returns: Hours remaining or default float value.
         """
         return (
-            self._parse_int("a4", begin=1) / 10.0
+            self._parse_known_int("a4", begin=1) / 10.0
             if self._data is not None
             else DEFAULT_METADATA_FLOAT
         )
@@ -150,7 +230,7 @@ class C1000(SolixBLEDevice):
 
         :returns: Total AC power in or default int value.
         """
-        return self._parse_int("a5", begin=1)
+        return self._parse_known_int("a5", begin=1)
 
     @property
     def ac_power_out(self) -> int:
@@ -158,7 +238,7 @@ class C1000(SolixBLEDevice):
 
         :returns: Total AC power out or default int value.
         """
-        return self._parse_int("a6", begin=1)
+        return self._parse_known_int("a6", begin=1)
 
     @property
     def usb_c1_power(self) -> int:
@@ -198,7 +278,7 @@ class C1000(SolixBLEDevice):
 
         :returns: DC power out or default int value.
         """
-        return self._parse_int("ad", begin=1)
+        return self._parse_known_int("ad", begin=1)
 
     @property
     def solar_power_in(self) -> int:
@@ -214,7 +294,7 @@ class C1000(SolixBLEDevice):
 
         :returns: Total power in or default int value.
         """
-        return self._parse_int("af", begin=1)
+        return self._parse_known_int("af", begin=1)
 
     @property
     def power_out(self) -> int:
@@ -222,7 +302,7 @@ class C1000(SolixBLEDevice):
 
         :returns: Total power out or default int value.
         """
-        return self._parse_int("b0", begin=1)
+        return self._parse_known_int("b0", begin=1)
 
     @property
     def software_version(self) -> str:
@@ -268,6 +348,8 @@ class C1000(SolixBLEDevice):
 
         :returns: Status of the AC port.
         """
+        if self._data is None or "bb" not in self._data:
+            return PortStatus.UNKNOWN
         return PortStatus(self._parse_int("bb", begin=1))
 
     @property
@@ -279,6 +361,8 @@ class C1000(SolixBLEDevice):
 
         :returns: Status of the DC port.
         """
+        if self._data is None or "cc" not in self._data:
+            return PortStatus.UNKNOWN
         return PortStatus(self._parse_int("cc", begin=1))
 
     @property
@@ -297,7 +381,7 @@ class C1000(SolixBLEDevice):
 
         :returns: Configured display timeout or default int value.
         """
-        return self._parse_int("d3", begin=1)
+        return self._parse_known_int("d3", begin=1)
 
     @property
     def display_mode(self) -> LightStatus:
@@ -306,6 +390,8 @@ class C1000(SolixBLEDevice):
         :returns: Configured display backlight brightness.
         """
         if self._data is None:
+            return LightStatus.UNKNOWN
+        if "d9" not in self._data:
             return LightStatus.UNKNOWN
         if not self.is_display_on:
             return LightStatus.OFF
@@ -317,11 +403,9 @@ class C1000(SolixBLEDevice):
 
         :returns: Status of the display.
         """
-        return (
-            bool(self._parse_int("de", begin=1))
-            if self._data is not None
-            else DEFAULT_METADATA_BOOL
-        )
+        if self._data is None or "de" not in self._data:
+            return DEFAULT_METADATA_BOOL
+        return bool(self._parse_int("de", begin=1))
 
     @property
     def temperature(self) -> int:
@@ -345,7 +429,7 @@ class C1000(SolixBLEDevice):
 
         :returns: Percentage charge of battery or default int value.
         """
-        return self._parse_int("c1", begin=1)
+        return self._parse_known_int("c1", begin=1)
 
     @property
     def battery_percentage_expansion(self) -> int:
@@ -386,6 +470,29 @@ class C1000(SolixBLEDevice):
         :returns: Device serial number or default str value.
         """
         return self._parse_string("d0", begin=1)
+
+    async def _refresh_control_status(self) -> None:
+        """Poll full status and merge only control keys into cached telemetry."""
+        if self._control_refresh_in_flight:
+            return
+
+        self._control_refresh_in_flight = True
+        try:
+            try:
+                parameters = await self.get_status_update()
+            except Exception:
+                _LOGGER.debug("Unable to refresh C1000 control status", exc_info=True)
+                return
+
+            control_parameters = {
+                key: value
+                for key, value in parameters.items()
+                if key in C1000_CONTROL_TELEMETRY_KEYS
+            }
+            if control_parameters:
+                await self._process_partial_telemetry(control_parameters)
+        finally:
+            self._control_refresh_in_flight = False
 
     async def turn_ac_on(self) -> None:
         """Turn the AC output on.
@@ -570,8 +677,8 @@ class C1000(SolixBLEDevice):
         :returns: Dictionary containing telemetry parameters.
         """
         await self._send_command(
-            cmd=bytes.fromhex("4040"),
-            payload=bytes.fromhex("a10121"),
+            cmd=bytes.fromhex(CMD_STATUS_UPDATE),
+            payload=bytes.fromhex(PAYLOAD_STATUS_UPDATE),
         )
 
         packet_1 = await self._listen_for_packet(
