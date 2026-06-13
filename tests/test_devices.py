@@ -49,6 +49,11 @@ class ConnectedClient:
         self.writes.append((char_specifier, data))
 
 
+C1000_TEST_SECRET = bytes.fromhex(
+    "00112233445566778899aabbccddeeff0102030405060708090a0b0c0d0e0f10"
+)
+
+
 async def assert_c1000_command_packet(
     monkeypatch, action, cmd_hex: str, payload_hex: str
 ):
@@ -56,9 +61,7 @@ async def assert_c1000_command_packet(
     client = ConnectedClient()
     device = C1000(MOCK_BLE_DEVICE)
     device._client = client
-    device._shared_secret = bytes.fromhex(
-        "00112233445566778899aabbccddeeff0102030405060708090a0b0c0d0e0f10"
-    )
+    device._shared_secret = C1000_TEST_SECRET
     device._negotiation_timestamp = 100.0
     monkeypatch.setattr("SolixBLE.device.time.time", lambda: 105.9)
 
@@ -910,6 +913,136 @@ async def test_c1000_light_value(mode: LightStatus) -> None:
     await device._process_telemetry(parameters)
 
     assert device.light is mode
+
+
+@pytest.mark.asyncio
+async def test_c1000_partial_light_telemetry_merges_cached_state() -> None:
+    """Test partial C1000 light telemetry does not replace the cached baseline."""
+    device = C1000(MOCK_BLE_DEVICE)
+    initial = device._parse_payload(
+        bytes.fromhex(
+            "a603020000a703020000a803020000a903020000aa03020000"
+            "ad03020000b003020000c1020150dc020100d9020102"
+            "de020100d303021400"
+        )
+    )
+    await device._process_telemetry(initial)
+
+    callbacks: list[LightStatus] = []
+    device.add_callback(lambda: callbacks.append(device.light))
+    await device._process_telemetry(device._parse_payload(bytes.fromhex("dc020103")))
+
+    assert device.light is LightStatus.HIGH
+    assert device.battery_percentage == 80
+    assert device.power_out == 0
+    assert device.is_display_on is False
+    assert device.display_mode is LightStatus.OFF
+    assert device.display_timeout == 20
+    assert device._data["dc"] == bytes.fromhex("0103")
+    assert callbacks == [LightStatus.HIGH]
+
+
+@pytest.mark.asyncio
+async def test_c1000_partial_power_telemetry_does_not_infer_light_from_b0() -> None:
+    """Test C1000 power telemetry is not treated as light status."""
+    device = C1000(MOCK_BLE_DEVICE)
+    initial = device._parse_payload(
+        bytes.fromhex(
+            "a603020000a703020000a803020000a903020000aa03020000"
+            "ad03020000b003020000c1020150dc020100d9020102"
+            "de020100d303021400"
+        )
+    )
+    await device._process_telemetry(initial)
+
+    async def get_status_update() -> dict[str, bytes]:
+        return device._parse_payload(bytes.fromhex("dc020100"))
+
+    callbacks: list[LightStatus] = []
+    device.add_callback(lambda: callbacks.append(device.light))
+    device.get_status_update = get_status_update
+    await device._process_telemetry(
+        device._parse_payload(bytes.fromhex("a40302560ab003020100bf020101"))
+    )
+    await asyncio.sleep(0.25)
+
+    assert device.light is LightStatus.OFF
+    assert device.power_out == 1
+    assert device.is_display_on is False
+    assert device.display_mode is LightStatus.OFF
+    assert device.display_timeout == 20
+    assert device._data["dc"] == bytes.fromhex("0100")
+    assert callbacks == [LightStatus.OFF]
+
+
+@pytest.mark.asyncio
+async def test_c1000_compact_physical_packet_refreshes_light_from_status() -> None:
+    """Test compact C1000 physical packets refresh actual light telemetry."""
+    device = C1000(MOCK_BLE_DEVICE)
+    initial = device._parse_payload(
+        bytes.fromhex(
+            "a603024600a703020000a803020000a903020000aa03020000"
+            "ad03020000b003024600c1020150dc020100d9020102"
+            "de020100d303021400"
+        )
+    )
+    await device._process_telemetry(initial)
+
+    async def get_status_update() -> dict[str, bytes]:
+        return device._parse_payload(
+            bytes.fromhex(
+                "a603024600a703020000a803020000a903020000aa03020000"
+                "ad03020000b003024800c1020150dc020102d9020102"
+                "de020100d303021400"
+            )
+        )
+
+    callbacks: list[LightStatus] = []
+    device.add_callback(lambda: callbacks.append(device.light))
+    device.get_status_update = get_status_update
+
+    await device._process_telemetry(
+        device._parse_payload(bytes.fromhex("a40302560ab003024800bf020101"))
+    )
+    await asyncio.sleep(0.25)
+
+    assert device.power_out == 72
+    assert device.light is LightStatus.MEDIUM
+    assert device._data["dc"] == bytes.fromhex("0102")
+    assert callbacks == [LightStatus.OFF, LightStatus.MEDIUM]
+
+
+@pytest.mark.asyncio
+async def test_c1000_work_info_burst_debounces_to_single_poll() -> None:
+    """Test rapid work-info fragments coalesce into one control-status poll."""
+    device = C1000(MOCK_BLE_DEVICE)
+    initial = device._parse_payload(
+        bytes.fromhex(
+            "a603020000a703020000a803020000a903020000aa03020000"
+            "ad03020000b003020000c1020150dc020100"
+        )
+    )
+    await device._process_telemetry(initial)
+
+    poll_count = 0
+
+    async def get_status_update() -> dict[str, bytes]:
+        nonlocal poll_count
+        poll_count += 1
+        return device._parse_payload(bytes.fromhex("dc020103"))
+
+    device.get_status_update = get_status_update
+
+    await device._process_telemetry(device._parse_payload(bytes.fromhex("a40302560a")))
+    await device._process_telemetry(
+        device._parse_payload(bytes.fromhex("a40302550ab003020100bf020101"))
+    )
+    await device._process_telemetry(device._parse_payload(bytes.fromhex("b003020200")))
+
+    await asyncio.sleep(0.25)
+
+    assert poll_count == 1
+    assert device.light is LightStatus.HIGH
 
 
 @pytest.mark.asyncio
