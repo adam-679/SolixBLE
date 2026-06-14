@@ -33,7 +33,7 @@ PAYLOAD_OFF = "a10121a2020100"
 PAYLOAD_STATUS_UPDATE = "a10121"
 PAYLOAD_LIGHT_MODE = "a10121a20201"
 PAYLOAD_TIMEOUT_TIME = "a10121a20302"
-PAYLOAD_AC_RECHARGE_POWER = "a10144a202"
+PAYLOAD_AC_RECHARGE_POWER = "a10121a20302"
 PAYLOAD_ULTRAFAST_RECHARGE = "a1015ea201"
 PAYLOAD_TIMER_SECONDS = "a10121a20503"
 
@@ -232,6 +232,14 @@ class C1000(SolixBLEDevice):
         :returns: Total AC power in or default int value.
         """
         return self._parse_known_int("a5", begin=1)
+
+    @property
+    def ac_recharge_power_limit(self) -> int:
+        """AC recharge input power limit.
+
+        :returns: AC recharge power limit in watts or default int value.
+        """
+        return self._parse_int("d1", begin=1)
 
     @property
     def ac_power_out(self) -> int:

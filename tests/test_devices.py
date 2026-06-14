@@ -86,7 +86,7 @@ async def assert_c1000_command_packet(
         (
             lambda device: device.set_ac_recharge_power(200),
             "4044",
-            "a10144a202c800",
+            "a10121a20302c800",
         ),
         (
             lambda device: device.set_ultrafast_recharge(True),
@@ -132,6 +132,24 @@ async def test_c1000_set_output_timer_rejects_out_of_range():
 
     with pytest.raises(ValueError):
         await device.set_dc_timer(86101)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload,expected_watts",
+    [
+        ("d103025802", 600),
+        ("d10302c800", 200),
+        ("d10302e803", 1000),
+    ],
+)
+async def test_c1000_ac_recharge_power_limit_readback(payload, expected_watts):
+    """Test C1000 AC recharge power limit telemetry readback."""
+    device = C1000(MOCK_BLE_DEVICE)
+    parameters = device._parse_payload(bytes.fromhex(payload))
+    await device._process_telemetry(parameters)
+
+    assert device.ac_recharge_power_limit == expected_watts
 
 
 @pytest.mark.asyncio
