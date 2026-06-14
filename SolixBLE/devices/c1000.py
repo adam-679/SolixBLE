@@ -34,7 +34,6 @@ PAYLOAD_STATUS_UPDATE = "a10121"
 PAYLOAD_LIGHT_MODE = "a10121a20201"
 PAYLOAD_TIMEOUT_TIME = "a10121a20302"
 PAYLOAD_AC_RECHARGE_POWER = "a10121a20302"
-PAYLOAD_ULTRAFAST_RECHARGE = "a1015ea201"
 PAYLOAD_TIMER_SECONDS = "a10121a20503"
 
 MIN_AC_RECHARGE_POWER = 200
@@ -240,6 +239,18 @@ class C1000(SolixBLEDevice):
         :returns: AC recharge power limit in watts or default int value.
         """
         return self._parse_int("d1", begin=1)
+
+    @property
+    def ultrafast_recharge(self) -> bool | None:
+        """UltraFast AC recharge mode.
+
+        :returns: True if UltraFast recharge is enabled, False if disabled.
+        """
+        return (
+            bool(self._parse_int("e5", begin=1))
+            if self._data is not None
+            else DEFAULT_METADATA_BOOL
+        )
 
     @property
     def ac_power_out(self) -> int:
@@ -645,13 +656,18 @@ class C1000(SolixBLEDevice):
         """Set UltraFast AC recharging mode.
 
         :param enabled: Enable or disable UltraFast AC recharging.
+        :raises ValueError: If enabling while AC recharge power is below 1000W.
         :raises ConnectionError: If not connected to device.
         :raises BleakError: If command transmission fails.
         """
+        if enabled and self.ac_recharge_power_limit != MAX_AC_RECHARGE_POWER:
+            raise ValueError(
+                "UltraFast AC recharging requires the AC recharge power limit "
+                f"to be {MAX_AC_RECHARGE_POWER} watts"
+            )
         await self._send_command(
             cmd=bytes.fromhex(CMD_ULTRAFAST_RECHARGE),
-            payload=bytes.fromhex(PAYLOAD_ULTRAFAST_RECHARGE)
-            + (2 if enabled else 0).to_bytes(),
+            payload=bytes.fromhex(PAYLOAD_ON if enabled else PAYLOAD_OFF),
         )
 
     async def set_dc_timer(self, seconds: int) -> None:
@@ -727,4 +743,5 @@ class C1000(SolixBLEDevice):
         decrypted_payload = self._decrypt_payload(new_payload)
         parameters = self._parse_payload(decrypted_payload)
         _LOGGER.debug(f"Parameters: {self._parameters_to_str(parameters, types=True)}")
+        await self._process_telemetry(parameters)
         return parameters

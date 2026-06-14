@@ -63,6 +63,7 @@ async def assert_c1000_command_packet(
     device._client = client
     device._shared_secret = C1000_TEST_SECRET
     device._negotiation_timestamp = 100.0
+    device._data = {"d1": bytes.fromhex("02e803")}
     monkeypatch.setattr("SolixBLE.device.time.time", lambda: 105.9)
 
     await action(device)
@@ -91,12 +92,12 @@ async def assert_c1000_command_packet(
         (
             lambda device: device.set_ultrafast_recharge(True),
             "405e",
-            "a1015ea20102",
+            "a10121a2020101",
         ),
         (
             lambda device: device.set_ultrafast_recharge(False),
             "405e",
-            "a1015ea20100",
+            "a10121a2020100",
         ),
         (
             lambda device: device.set_dc_timer(27600),
@@ -140,6 +141,7 @@ async def test_c1000_set_output_timer_rejects_out_of_range():
     [
         ("d103025802", 600),
         ("d10302c800", 200),
+        ("d103022c01", 300),
         ("d10302e803", 1000),
     ],
 )
@@ -150,6 +152,38 @@ async def test_c1000_ac_recharge_power_limit_readback(payload, expected_watts):
     await device._process_telemetry(parameters)
 
     assert device.ac_recharge_power_limit == expected_watts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload,expected_enabled",
+    [
+        ("e5020100", False),
+        ("e5020101", True),
+    ],
+)
+async def test_c1000_ultrafast_recharge_readback(payload, expected_enabled):
+    """Test C1000 UltraFast recharge telemetry readback."""
+    device = C1000(MOCK_BLE_DEVICE)
+    parameters = device._parse_payload(bytes.fromhex(payload))
+    await device._process_telemetry(parameters)
+
+    assert device.ultrafast_recharge is expected_enabled
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_ultrafast_recharge_requires_max_power_limit():
+    """Test C1000 UltraFast recharge validates the configured power limit."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    with pytest.raises(ValueError):
+        await device.set_ultrafast_recharge(True)
+
+    parameters = device._parse_payload(bytes.fromhex("d10302c800"))
+    await device._process_telemetry(parameters)
+
+    with pytest.raises(ValueError):
+        await device.set_ultrafast_recharge(True)
 
 
 @pytest.mark.asyncio
