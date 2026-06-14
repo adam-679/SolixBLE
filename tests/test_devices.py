@@ -1046,6 +1046,103 @@ async def test_c1000_work_info_burst_debounces_to_single_poll() -> None:
 
 
 @pytest.mark.asyncio
+async def test_c1000_status_updates_are_serialized() -> None:
+    """Test overlapping C1000 status polls do not duplicate c840 consumers."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
+    first_packet_requested = asyncio.Event()
+    release_first_packet = asyncio.Event()
+    listen_calls = 0
+
+    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
+        nonlocal listen_calls
+        listen_calls += 1
+        if listen_calls == 1:
+            first_packet_requested.set()
+            await release_first_packet.wait()
+        return b"\x00"
+
+    device._listen_for_packet = listen_for_packet
+    device._decrypt_payload = lambda payload: bytes.fromhex("dc020103")
+
+    first = asyncio.create_task(device.get_status_update())
+    await asyncio.wait_for(first_packet_requested.wait(), timeout=1)
+    assert len(client.writes) == 1
+
+    second = asyncio.create_task(device.get_status_update())
+    await asyncio.sleep(0.01)
+    assert len(client.writes) == 1
+
+    release_first_packet.set()
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert len(client.writes) == 2
+    assert listen_calls == 4
+    assert first_result["dc"] == bytes.fromhex("0103")
+    assert second_result["dc"] == bytes.fromhex("0103")
+
+
+@pytest.mark.asyncio
+async def test_c1000_command_waits_for_status_update_transaction() -> None:
+    """Test C1000 commands wait while a status update owns c840 responses."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
+    first_packet_requested = asyncio.Event()
+    release_first_packet = asyncio.Event()
+    listen_calls = 0
+
+    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
+        nonlocal listen_calls
+        listen_calls += 1
+        if listen_calls == 1:
+            first_packet_requested.set()
+            await release_first_packet.wait()
+        return b"\x00"
+
+    device._listen_for_packet = listen_for_packet
+    device._decrypt_payload = lambda payload: bytes.fromhex("dc020103")
+
+    status_update = asyncio.create_task(device.get_status_update())
+    await asyncio.wait_for(first_packet_requested.wait(), timeout=1)
+    assert len(client.writes) == 1
+
+    command = asyncio.create_task(device.set_light_mode(LightStatus.LOW))
+    await asyncio.sleep(0.01)
+    assert len(client.writes) == 1
+
+    release_first_packet.set()
+    await asyncio.gather(status_update, command)
+
+    assert len(client.writes) == 2
+    _, command_packet = client.writes[1]
+    _, cmd, _ = device._split_packet(command_packet)
+    assert cmd == bytes.fromhex("404f")
+
+
+@pytest.mark.asyncio
+async def test_unclaimed_status_response_fragment_is_ignored(caplog) -> None:
+    """Test stale c840 status fragments do not enter unknown-message decrypt."""
+    caplog.set_level(logging.DEBUG)
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    packet = device._build_packet(
+        bytes.fromhex("03010f"), bytes.fromhex("c840"), bytes.fromhex("00")
+    )
+
+    await device._process_notification(client, 0, packet)
+
+    assert "Ignoring unclaimed status response fragment" in caplog.text
+    assert "Exception decrypting unknown message type" not in caplog.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mode",
     [
@@ -1086,36 +1183,45 @@ async def test_c1000_set_light_mode_payload(mode: LightStatus) -> None:
 )
 async def test_c1000_set_light_mode_confirmed(mode: LightStatus) -> None:
     """Test C1000 confirmed light controls use fresh telemetry."""
+    client = ConnectedClient()
     device = C1000(MOCK_BLE_DEVICE)
-    sent_modes: list[LightStatus] = []
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
 
-    async def fake_set_light_mode(requested_mode: LightStatus) -> None:
-        sent_modes.append(requested_mode)
+    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
+        return b"\x00"
 
-    async def fake_get_status_update() -> dict[str, bytes]:
-        return {"dc": bytes([1, mode.value])}
-
-    device.set_light_mode = fake_set_light_mode
-    device.get_status_update = fake_get_status_update
+    device._listen_for_packet = listen_for_packet
+    device._decrypt_payload = lambda payload: bytes([0xDC, 0x02, 0x01, mode.value])
 
     assert await device.set_light_mode_confirmed(mode) is True
-    assert sent_modes == [mode]
     assert device.light is mode
+    assert len(client.writes) == 2
+    _, light_packet = client.writes[0]
+    _, status_packet = client.writes[1]
+    _, light_cmd, _ = device._split_packet(light_packet)
+    _, status_cmd, _ = device._split_packet(status_packet)
+    assert light_cmd == bytes.fromhex("404f")
+    assert status_cmd == bytes.fromhex("4040")
 
 
 @pytest.mark.asyncio
 async def test_c1000_set_light_mode_confirmed_mismatch() -> None:
     """Test C1000 light confirmation fails when telemetry disagrees."""
+    client = ConnectedClient()
     device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
 
-    async def fake_set_light_mode(requested_mode: LightStatus) -> None:
-        assert requested_mode is LightStatus.HIGH
+    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
+        return b"\x00"
 
-    async def fake_get_status_update() -> dict[str, bytes]:
-        return {"dc": bytes([1, LightStatus.LOW.value])}
-
-    device.set_light_mode = fake_set_light_mode
-    device.get_status_update = fake_get_status_update
+    device._listen_for_packet = listen_for_packet
+    device._decrypt_payload = lambda payload: bytes(
+        [0xDC, 0x02, 0x01, LightStatus.LOW.value]
+    )
 
     assert await device.set_light_mode_confirmed(LightStatus.HIGH) is False
     assert device.light is LightStatus.LOW

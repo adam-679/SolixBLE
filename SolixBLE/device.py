@@ -579,9 +579,7 @@ class SolixBLEDevice:
             _LOGGER.debug(self)
             self._run_state_changed_callbacks()
 
-    async def _process_partial_telemetry(
-        self, parameters: dict[str, bytes]
-    ) -> None:
+    async def _process_partial_telemetry(self, parameters: dict[str, bytes]) -> None:
         """Merge partial telemetry into the cached state before processing."""
         if self._data is not None:
             parameters = self._data | parameters
@@ -636,6 +634,15 @@ class SolixBLEDevice:
                     case "c402" | "4300" | "c405":
                         _LOGGER.debug("Received telemetry message!")
                         return await self._process_telemetry_packet(payload, cmd)
+
+                    # Status response fragments are consumed by get_status_update
+                    # futures. If one arrives after its future is gone, it is stale.
+                    case "c840":
+                        _LOGGER.debug(
+                            "Ignoring unclaimed status response fragment: %s",
+                            payload.hex(),
+                        )
+                        return
 
                     # Unknown messages
                     case _:

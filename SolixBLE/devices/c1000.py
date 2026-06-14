@@ -61,6 +61,7 @@ class C1000(SolixBLEDevice):
 
     def __init__(self, ble_device) -> None:
         super().__init__(ble_device)
+        self._operation_lock = asyncio.Lock()
         self._control_refresh_debounce_task: asyncio.Task | None = None
         self._control_refresh_in_flight = False
 
@@ -494,6 +495,15 @@ class C1000(SolixBLEDevice):
         finally:
             self._control_refresh_in_flight = False
 
+    async def _send_command(self, cmd: bytes, payload: bytes) -> None:
+        """Send a C1000 command without overlapping status-response reads."""
+        async with self._operation_lock:
+            await self._send_command_unlocked(cmd, payload)
+
+    async def _send_command_unlocked(self, cmd: bytes, payload: bytes) -> None:
+        """Send a command while the caller already owns the operation lock."""
+        await super()._send_command(cmd, payload)
+
     async def turn_ac_on(self) -> None:
         """Turn the AC output on.
 
@@ -559,8 +569,14 @@ class C1000(SolixBLEDevice):
         :raises BleakError: If command transmission fails.
         :returns: True when telemetry reports the requested light mode.
         """
-        await self.set_light_mode(mode)
-        parameters = await self.get_status_update()
+        if mode is LightStatus.UNKNOWN:
+            raise ValueError("You cannot set the light status to unknown")
+        async with self._operation_lock:
+            await self._send_command_unlocked(
+                cmd=bytes.fromhex(CMD_LIGHT_MODE),
+                payload=bytes.fromhex(PAYLOAD_LIGHT_MODE) + mode.value.to_bytes(),
+            )
+            parameters = await self._get_status_update_unlocked()
         await self._process_telemetry(parameters)
         return self.light is mode
 
@@ -676,7 +692,12 @@ class C1000(SolixBLEDevice):
         :raises BleakError: If command transmission fails.
         :returns: Dictionary containing telemetry parameters.
         """
-        await self._send_command(
+        async with self._operation_lock:
+            return await self._get_status_update_unlocked()
+
+    async def _get_status_update_unlocked(self) -> dict[str, bytes]:
+        """Request a status update while the caller owns the operation lock."""
+        await self._send_command_unlocked(
             cmd=bytes.fromhex(CMD_STATUS_UPDATE),
             payload=bytes.fromhex(PAYLOAD_STATUS_UPDATE),
         )
