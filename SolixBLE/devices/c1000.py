@@ -20,6 +20,7 @@ from ..states import DisplayTimeout, LightStatus, PortStatus
 CMD_AC_OUTPUT = "404a"
 CMD_DC_OUTPUT = "404b"
 CMD_STATUS_UPDATE = "4040"
+CMD_AC_TIMER = "4042"
 CMD_LIGHT_MODE = "404f"
 CMD_DISPLAY_MODE = "404c"
 CMD_DISPLAY_TIMEOUT = "4046"
@@ -563,6 +564,24 @@ class C1000(SolixBLEDevice):
             cmd=bytes.fromhex(CMD_DC_OUTPUT), payload=bytes.fromhex(PAYLOAD_OFF)
         )
 
+    async def set_ac_timer(self, seconds: int) -> None:
+        """Set the AC output timer.
+
+        :param seconds: Number of seconds until the AC output turns off. Use 0 to disable.
+        :raises ValueError: If seconds is outside the encodable range.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        if not 0 <= seconds <= MAX_TIMER_SECONDS:
+            raise ValueError(
+                f"Output timer must be between 0 and {MAX_TIMER_SECONDS} seconds"
+            )
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_AC_TIMER),
+            payload=bytes.fromhex(PAYLOAD_TIMER_SECONDS)
+            + seconds.to_bytes(length=4, byteorder="little", signed=False),
+        )
+
     async def set_light_mode(self, mode: LightStatus) -> None:
         """Set the light mode of the LED bar.
 
@@ -668,6 +687,24 @@ class C1000(SolixBLEDevice):
         await self._send_command(
             cmd=bytes.fromhex(CMD_ULTRAFAST_RECHARGE),
             payload=bytes.fromhex(PAYLOAD_ON if enabled else PAYLOAD_OFF),
+        )
+
+    async def set_ac_timer(self, seconds: int) -> None:
+        """Set the AC output timer.
+
+        :param seconds: Number of seconds until the AC output turns off. Use 0 to disable.
+        :raises ValueError: If seconds is outside the encodable range.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        if not 0 <= seconds <= MAX_TIMER_SECONDS:
+            raise ValueError(
+                f"Output timer must be between 0 and {MAX_TIMER_SECONDS} seconds"
+            )
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_AC_TIMER),
+            payload=bytes.fromhex(PAYLOAD_TIMER_SECONDS)
+            + seconds.to_bytes(length=4, byteorder="little", signed=False),
         )
 
     async def set_dc_timer(self, seconds: int) -> None:

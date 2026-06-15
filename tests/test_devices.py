@@ -104,6 +104,16 @@ async def assert_c1000_command_packet(
             "4043",
             "a10121a20503d06b0000",
         ),
+        (
+            lambda device: device.set_ac_timer(3600),
+            "4042",
+            "a10121a20503100e0000",
+        ),
+        (
+            lambda device: device.set_ac_timer(0),
+            "4042",
+            "a10121a2050300000000",
+        ),
     ],
 )
 async def test_c1000_command_packet(monkeypatch, action, cmd, payload_hex):
@@ -127,6 +137,12 @@ async def test_c1000_set_ac_recharge_power_rejects_out_of_range():
 async def test_c1000_set_output_timer_rejects_out_of_range():
     """Test C1000 output timers validate encodable second values."""
     device = C1000(MOCK_BLE_DEVICE)
+
+    with pytest.raises(ValueError):
+        await device.set_ac_timer(-1)
+
+    with pytest.raises(ValueError):
+        await device.set_ac_timer(86101)
 
     with pytest.raises(ValueError):
         await device.set_dc_timer(-1)
@@ -184,6 +200,19 @@ async def test_c1000_set_ultrafast_recharge_requires_max_power_limit():
 
     with pytest.raises(ValueError):
         await device.set_ultrafast_recharge(True)
+
+
+@pytest.mark.asyncio
+async def test_c1000_ac_timer_readback():
+    """Test C1000 AC timer telemetry readback from validated raw key a2."""
+    device = C1000(MOCK_BLE_DEVICE)
+    payload = "a10131a205030a0e0000a3050300000000"
+
+    parameters = device._parse_payload(bytes.fromhex(payload))
+    await device._process_telemetry(parameters)
+
+    assert device.ac_timer_remaining == 3594
+    assert device.ac_timer is not None
 
 
 @pytest.mark.asyncio
