@@ -400,6 +400,40 @@ class SolixBLEDevice:
                 _LOGGER.exception(message)
                 raise IndexError(message) from e
 
+        def _has_valid_parameter_prefix(data: bytearray) -> bool:
+            """Return true when data can start with a complete TLV parameter."""
+            if len(data) <= 1:
+                return True
+            return data[1] <= len(data) - 2
+
+        def _maybe_recover_short_param_data(
+            param_id: str, param_data: bytes, remaining_data: bytearray
+        ) -> bytes:
+            """Recover one-byte length undercounts before the next TLV field."""
+            if (
+                not param_data
+                or not remaining_data
+                or _has_valid_parameter_prefix(remaining_data)
+            ):
+                return param_data
+
+            next_byte = remaining_data[0]
+            candidate_remaining = remaining_data[1:]
+            if (
+                param_data[-1] & 0x80
+                and not next_byte & 0x80
+                and _has_valid_parameter_prefix(candidate_remaining)
+            ):
+                _LOGGER.debug(
+                    "Recovering one-byte length undercount for parameter %s",
+                    param_id,
+                )
+                return param_data + _verbose_pop(
+                    remaining_data, 1, f"param_data recovery (id={param_id})"
+                )
+
+            return param_data
+
         parsed_data: dict[str, bytes] = {}
         remaining_data = bytearray(payload)
 
@@ -426,6 +460,9 @@ class SolixBLEDevice:
                 # Extract data/body from parameter
                 param_data = _verbose_pop(
                     remaining_data, param_len, f"param_data (id={param_id})"
+                )
+                param_data = _maybe_recover_short_param_data(
+                    param_id, param_data, remaining_data
                 )
                 parsed_data[param_id] = param_data
 
@@ -493,7 +530,9 @@ class SolixBLEDevice:
         )
         return cipher.encrypt(padded_data)
 
-    async def _process_telemetry_packet(self, payload: bytes, cmd: bytes = None) -> None:
+    async def _process_telemetry_packet(
+        self, payload: bytes, cmd: bytes = None
+    ) -> None:
         """Process a telemetry packet from the device.
 
         This performs the default processing of telemetry packets in which
@@ -533,14 +572,12 @@ class SolixBLEDevice:
             )
             del self._fragment_buffers[cmd_key]
             del self._fragment_totals[cmd_key]
-            _LOGGER.debug(
-                f"Reassembled payload: {len(payload)} bytes"
-            )
+            _LOGGER.debug(f"Reassembled payload: {len(payload)} bytes")
 
         else:
             # Strip fragment info
             payload = payload[1:]
-        
+
         decrypted_payload = self._decrypt_payload(payload)
         _LOGGER.debug(f"Decrypted payload: {decrypted_payload.hex()}")
         parameters = self._parse_payload(decrypted_payload)
