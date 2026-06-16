@@ -17,6 +17,7 @@ from SolixBLE import (
     C1000,
     C1000G2,
     ChargingStatus,
+    DisplayTimeout,
     LightStatus,
     PortOverload,
     PortStatus,
@@ -34,6 +35,280 @@ from tests.const import (
     NEGOTIATION_RESPONSES_SOLIX,
 )
 from tests.helpers import MockDevice
+
+
+async def assert_c300dc_command(action, cmd_hex: str, payload_hex: str) -> None:
+    """Assert a C300DC command sends the expected command and payload."""
+    device = C300DC(MOCK_BLE_DEVICE)
+    sent: dict[str, bytes] = {}
+
+    async def fake_send_command(cmd: bytes, payload: bytes) -> None:
+        sent["cmd"] = cmd
+        sent["payload"] = payload
+
+    device._send_command = fake_send_command
+
+    await action(device)
+
+    assert sent["cmd"].hex() == cmd_hex
+    assert sent["payload"].hex() == payload_hex
+
+
+@pytest.mark.asyncio
+async def test_c300dc_get_status_update() -> None:
+    """Test C300DC status update requests and parses the expected packets."""
+    device = C300DC(MOCK_BLE_DEVICE)
+    sent: dict[str, bytes] = {}
+    listens: list[tuple[bytes, bytes]] = []
+    packets = [b"\x01packet_1", b"\x02packet_2"]
+
+    async def fake_send_command(cmd: bytes, payload: bytes) -> None:
+        sent["cmd"] = cmd
+        sent["payload"] = payload
+
+    async def fake_listen_for_packet(prefix: bytes, cmd: bytes) -> bytes:
+        listens.append((prefix, cmd))
+        return packets.pop(0)
+
+    def fake_decrypt_payload(payload: bytes) -> bytes:
+        assert payload == b"packet_1packet_2"
+        return b"parameters"
+
+    def fake_parse_payload(payload: bytes) -> dict[str, bytes]:
+        assert payload == b"parameters"
+        return {"a1": b"1"}
+
+    device._send_command = fake_send_command
+    device._listen_for_packet = fake_listen_for_packet
+    device._decrypt_payload = fake_decrypt_payload
+    device._parse_payload = fake_parse_payload
+
+    assert await device.get_status_update() == {"a1": b"1"}
+    assert sent["cmd"].hex() == "4040"
+    assert sent["payload"].hex() == "a10121"
+    assert listens == [
+        (bytes.fromhex("03010f"), bytes.fromhex("c840")),
+        (bytes.fromhex("03010f"), bytes.fromhex("c840")),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action,cmd_hex,payload_hex",
+    [
+        pytest.param(
+            lambda device: device.turn_dc_on(),
+            "404b",
+            "a10121a2020101",
+            id="dc_on",
+        ),
+        pytest.param(
+            lambda device: device.turn_dc_off(),
+            "404b",
+            "a10121a2020100",
+            id="dc_off",
+        ),
+        pytest.param(
+            lambda device: device.set_dc_timer(0),
+            "4043",
+            "a10121a2050300000000",
+            id="dc_timer_off",
+        ),
+        pytest.param(
+            lambda device: device.set_dc_timer(86100),
+            "4043",
+            "a10121a2050354500100",
+            id="dc_timer_max",
+        ),
+        pytest.param(
+            lambda device: device.turn_display_on(),
+            "4052",
+            "a10121a2020101",
+            id="display_on",
+        ),
+        pytest.param(
+            lambda device: device.turn_display_off(),
+            "4052",
+            "a10121a2020100",
+            id="display_off",
+        ),
+        pytest.param(
+            lambda device: device.set_display_timeout(DisplayTimeout.S20),
+            "4046",
+            "a10121a203021400",
+            id="display_timeout_20s",
+        ),
+        pytest.param(
+            lambda device: device.set_display_timeout(DisplayTimeout.S1800),
+            "4046",
+            "a10121a203020807",
+            id="display_timeout_1800s",
+        ),
+        pytest.param(
+            lambda device: device.set_device_timeout(0),
+            "4045",
+            "a10121a203020000",
+            id="device_timeout_never",
+        ),
+        pytest.param(
+            lambda device: device.set_device_timeout(1440),
+            "4045",
+            "a10121a20302a005",
+            id="device_timeout_1440m",
+        ),
+        pytest.param(
+            lambda device: device.set_light_timeout(0),
+            "4075",
+            "a10121a203020000",
+            id="light_timeout_never",
+        ),
+        pytest.param(
+            lambda device: device.set_light_timeout(1440),
+            "4075",
+            "a10121a20302a005",
+            id="light_timeout_1440m",
+        ),
+        pytest.param(
+            lambda device: device.set_dc_12v_power_saving_mode(True),
+            "4076",
+            "a10121a2020101",
+            id="dc_12v_power_saving_on",
+        ),
+        pytest.param(
+            lambda device: device.set_dc_12v_power_saving_mode(False),
+            "4076",
+            "a10121a2020100",
+            id="dc_12v_power_saving_off",
+        ),
+        pytest.param(
+            lambda device: device.set_dc_12v_auto_on(True),
+            "4079",
+            "a10121a2020101",
+            id="dc_12v_auto_on",
+        ),
+        pytest.param(
+            lambda device: device.set_dc_12v_auto_on(False),
+            "4079",
+            "a10121a2020100",
+            id="dc_12v_auto_off",
+        ),
+    ],
+)
+async def test_c300dc_control_payloads(action, cmd_hex: str, payload_hex: str) -> None:
+    """Test C300DC control payloads."""
+    await assert_c300dc_command(action, cmd_hex, payload_hex)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_f8,expected",
+    [
+        ("040100000000010000000000000000000000000000", False),
+        ("040200000000010000000000000000000000000000", True),
+    ],
+)
+async def test_c300dc_dc_12v_power_saving_mode_values(
+    raw_f8: str, expected: bool
+) -> None:
+    """Test C300DC DC 12V power saving telemetry values."""
+    device = C300DC(MOCK_BLE_DEVICE)
+
+    await device._process_telemetry({"f8": bytes.fromhex(raw_f8)})
+
+    assert device.dc_12v_power_saving_mode is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        LightStatus.LOW,
+        LightStatus.MEDIUM,
+        LightStatus.HIGH,
+    ],
+)
+async def test_c300dc_set_display_mode_payload(mode: LightStatus) -> None:
+    """Test C300DC display brightness control payloads."""
+    await assert_c300dc_command(
+        lambda device: device.set_display_mode(mode),
+        "404c",
+        f"a10121a20201{mode.value:02x}",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        LightStatus.OFF,
+        LightStatus.LOW,
+        LightStatus.MEDIUM,
+        LightStatus.HIGH,
+    ],
+)
+async def test_c300dc_set_light_mode_payload(mode: LightStatus) -> None:
+    """Test C300DC light control payloads."""
+    await assert_c300dc_command(
+        lambda device: device.set_light_mode(mode),
+        "404f",
+        f"a10121a20201{mode.value:02x}",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action",
+    [
+        pytest.param(lambda device: device.set_dc_timer(-1), id="dc_timer_negative"),
+        pytest.param(lambda device: device.set_dc_timer(86101), id="dc_timer_too_high"),
+        pytest.param(
+            lambda device: device.set_display_timeout(DisplayTimeout.UNKNOWN),
+            id="display_timeout_unknown",
+        ),
+        pytest.param(
+            lambda device: device.set_device_timeout(31),
+            id="device_timeout_invalid",
+        ),
+        pytest.param(
+            lambda device: device.set_light_timeout(31),
+            id="light_timeout_invalid",
+        ),
+        pytest.param(
+            lambda device: device.set_display_mode(LightStatus.UNKNOWN),
+            id="display_brightness_unknown",
+        ),
+        pytest.param(
+            lambda device: device.set_display_mode(LightStatus.OFF),
+            id="display_brightness_off",
+        ),
+        pytest.param(
+            lambda device: device.set_display_mode(LightStatus.SOS),
+            id="display_brightness_sos",
+        ),
+        pytest.param(
+            lambda device: device.set_light_mode(LightStatus.UNKNOWN),
+            id="light_unknown",
+        ),
+        pytest.param(
+            lambda device: device.set_light_mode(LightStatus.SOS),
+            id="light_sos",
+        ),
+    ],
+)
+async def test_c300dc_invalid_control_values(action) -> None:
+    """Test invalid C300DC control values are rejected before sending."""
+    device = C300DC(MOCK_BLE_DEVICE)
+    sent: list[bytes] = []
+
+    async def fake_send_command(cmd: bytes, payload: bytes) -> None:
+        sent.append(cmd)
+
+    device._send_command = fake_send_command
+
+    with pytest.raises(ValueError):
+        await action(device)
+
+    assert sent == []
 
 
 @pytest.mark.asyncio
@@ -524,6 +799,7 @@ from tests.helpers import MockDevice
                 "light_timeout": 0,
                 "solar_port": PortStatus.NOT_CONNECTED,
                 "dc_12v_auto_on": False,
+                "dc_12v_power_saving_mode": False,
             },
             id="c300_dc_min_values",
         ),
@@ -569,6 +845,7 @@ from tests.helpers import MockDevice
                 "light_timeout": 65535,
                 "solar_port": PortStatus.INPUT,
                 "dc_12v_auto_on": True,
+                "dc_12v_power_saving_mode": False,
             },
             id="c300_dc_max_values",
         ),
@@ -614,6 +891,7 @@ from tests.helpers import MockDevice
                 "light_timeout": 123,
                 "solar_port": PortStatus.INPUT,
                 "dc_12v_auto_on": True,
+                "dc_12v_power_saving_mode": False,
             },
             id="c300_dc_mixed_values",
         ),
