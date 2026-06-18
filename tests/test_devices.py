@@ -684,6 +684,26 @@ async def test_values(
         ), f"Mismatch for property '{class_property}'!"
 
 
+def test_parser_recovers_one_byte_length_undercount(caplog) -> None:
+    """Test optional metadata parsing when a nested varint crosses a TLV boundary."""
+    caplog.set_level(logging.ERROR)
+    device = SolixBLEDevice(MOCK_BLE_DEVICE)
+
+    parameters = device._parse_payload(
+        bytes.fromhex(
+            "a10131a23100040a05413137363112003204380040009a011a08ff0410"
+            "d90218cdc40120e80d28ae5730bf0238cf3240818f01b001d15da31b"
+            "046368617267696e675f7070735f7365726965735f635f30303032"
+        )
+    )
+
+    assert parameters["a1"] == bytes.fromhex("31")
+    assert len(parameters["a2"]) == 50
+    assert parameters["a2"].endswith(bytes.fromhex("d15d"))
+    assert parameters["a3"] == b"\x04charging_pps_series_c_0002"
+    assert "Unexpected end of packet" not in caplog.text
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "device_class,packets,secret",
