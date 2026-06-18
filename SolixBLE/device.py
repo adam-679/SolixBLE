@@ -493,7 +493,9 @@ class SolixBLEDevice:
         )
         return cipher.encrypt(padded_data)
 
-    async def _process_telemetry_packet(self, payload: bytes, cmd: bytes = None) -> None:
+    async def _process_telemetry_packet(
+        self, payload: bytes, cmd: bytes = None
+    ) -> None:
         """Process a telemetry packet from the device.
 
         This performs the default processing of telemetry packets in which
@@ -533,14 +535,12 @@ class SolixBLEDevice:
             )
             del self._fragment_buffers[cmd_key]
             del self._fragment_totals[cmd_key]
-            _LOGGER.debug(
-                f"Reassembled payload: {len(payload)} bytes"
-            )
+            _LOGGER.debug(f"Reassembled payload: {len(payload)} bytes")
 
         else:
             # Strip fragment info
             payload = payload[1:]
-        
+
         decrypted_payload = self._decrypt_payload(payload)
         _LOGGER.debug(f"Decrypted payload: {decrypted_payload.hex()}")
         parameters = self._parse_payload(decrypted_payload)
