@@ -26,6 +26,7 @@ from SolixBLE import (
     SolixBLEDevice,
     TemperatureUnit,
 )
+from SolixBLE.const import BASE_TIMESTAMP
 from SolixBLE.devices.solarbank2 import MaxLoadSB2
 from SolixBLE.states import GridStatus, LightMode, SBPowerCutoff, SBUsageMode
 from tests.const import (
@@ -34,6 +35,267 @@ from tests.const import (
     NEGOTIATION_RESPONSES_SOLIX,
 )
 from tests.helpers import MockDevice
+
+
+class ConnectedClient:
+    """Minimal connected BLE client for command-packet tests."""
+
+    is_connected = True
+
+    def __init__(self) -> None:
+        self.writes: list[tuple[str, bytes]] = []
+
+    async def write_gatt_char(self, char_specifier: str, data: bytes) -> None:
+        self.writes.append((char_specifier, data))
+
+
+C1000_TEST_SECRET = bytes.fromhex(
+    "00112233445566778899aabbccddeeff0102030405060708090a0b0c0d0e0f10"
+)
+
+
+async def assert_c1000_command_packet(
+    monkeypatch, action, cmd_hex: str, payload_hex: str
+):
+    """Assert a C1000 command sends the expected encrypted packet payload."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
+    device._data = {"d1": bytes.fromhex("02e803")}
+    monkeypatch.setattr("SolixBLE.device.time.time", lambda: 105.9)
+
+    await action(device)
+
+    assert len(client.writes) == 1
+    _, packet = client.writes[0]
+    pattern, cmd, encrypted_payload = device._split_packet(packet)
+    decrypted_payload = device._decrypt_payload(encrypted_payload)
+    timestamp = (
+        int.from_bytes(bytes.fromhex(BASE_TIMESTAMP), byteorder="little") + 5
+    ).to_bytes(length=4, byteorder="little")
+    assert pattern == bytes.fromhex("03000f")
+    assert cmd == bytes.fromhex(cmd_hex)
+    assert decrypted_payload == bytes.fromhex(payload_hex + "fe0503") + timestamp
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action,cmd,payload_hex",
+    [
+        (
+            lambda device: device.set_ac_recharge_power(200),
+            "4044",
+            "a10121a20302c800",
+        ),
+        (
+            lambda device: device.set_ultrafast_recharge(True),
+            "405e",
+            "a10121a2020101",
+        ),
+        (
+            lambda device: device.set_ultrafast_recharge(False),
+            "405e",
+            "a10121a2020100",
+        ),
+        (
+            lambda device: device.set_dc_timer(27600),
+            "4043",
+            "a10121a20503d06b0000",
+        ),
+        (
+            lambda device: device.set_ac_timer(3600),
+            "4042",
+            "a10121a20503100e0000",
+        ),
+        (
+            lambda device: device.set_ac_timer(0),
+            "4042",
+            "a10121a2050300000000",
+        ),
+        (
+            lambda device: device.set_dc_12v_power_saving_mode(True),
+            "4076",
+            "a10121a2020101",
+        ),
+        (
+            lambda device: device.set_dc_12v_power_saving_mode(False),
+            "4076",
+            "a10121a2020100",
+        ),
+        (
+            lambda device: device.set_ac_power_saving_mode(True),
+            "4077",
+            "a10121a2020101",
+        ),
+        (
+            lambda device: device.set_ac_power_saving_mode(False),
+            "4077",
+            "a10121a2020100",
+        ),
+        (
+            lambda device: device.set_dc_12v_auto_on(True),
+            "4079",
+            "a10121a2020101",
+        ),
+        (
+            lambda device: device.set_dc_12v_auto_on(False),
+            "4079",
+            "a10121a2020100",
+        ),
+    ],
+)
+async def test_c1000_command_packet(monkeypatch, action, cmd, payload_hex):
+    """Test C1000 control command payload and packet wrapping."""
+    await assert_c1000_command_packet(monkeypatch, action, cmd, payload_hex)
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_ac_recharge_power_rejects_out_of_range():
+    """Test C1000 AC recharge power validates encodable watt values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    with pytest.raises(ValueError):
+        await device.set_ac_recharge_power(199)
+
+    with pytest.raises(ValueError):
+        await device.set_ac_recharge_power(1001)
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_output_timer_rejects_out_of_range():
+    """Test C1000 output timers validate encodable second values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    with pytest.raises(ValueError):
+        await device.set_ac_timer(-1)
+
+    with pytest.raises(ValueError):
+        await device.set_ac_timer(86101)
+
+    with pytest.raises(ValueError):
+        await device.set_dc_timer(-1)
+
+    with pytest.raises(ValueError):
+        await device.set_dc_timer(86101)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload,expected_watts",
+    [
+        ("d103025802", 600),
+        ("d10302c800", 200),
+        ("d103022c01", 300),
+        ("d10302e803", 1000),
+    ],
+)
+async def test_c1000_ac_recharge_power_limit_readback(payload, expected_watts):
+    """Test C1000 AC recharge power limit telemetry readback."""
+    device = C1000(MOCK_BLE_DEVICE)
+    parameters = device._parse_payload(bytes.fromhex(payload))
+    await device._process_telemetry(parameters)
+
+    assert device.ac_recharge_power_limit == expected_watts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_f7,expected",
+    [
+        ("0301000000", True),
+        ("0300000000", False),
+    ],
+)
+async def test_c1000_dc_12v_auto_on_values(raw_f7: str, expected: bool) -> None:
+    """Test C1000 DC 12V auto on telemetry values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    await device._process_telemetry({"f7": bytes.fromhex(raw_f7)})
+
+    assert device.dc_12v_auto_on is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload,expected_enabled",
+    [
+        ("e5020100", False),
+        ("e5020101", True),
+    ],
+)
+async def test_c1000_ultrafast_recharge_readback(payload, expected_enabled):
+    """Test C1000 UltraFast recharge telemetry readback."""
+    device = C1000(MOCK_BLE_DEVICE)
+    parameters = device._parse_payload(bytes.fromhex(payload))
+    await device._process_telemetry(parameters)
+
+    assert device.ultrafast_recharge is expected_enabled
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_ultrafast_recharge_requires_max_power_limit():
+    """Test C1000 UltraFast recharge validates the configured power limit."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    with pytest.raises(ValueError):
+        await device.set_ultrafast_recharge(True)
+
+    parameters = device._parse_payload(bytes.fromhex("d10302c800"))
+    await device._process_telemetry(parameters)
+
+    with pytest.raises(ValueError):
+        await device.set_ultrafast_recharge(True)
+
+
+@pytest.mark.asyncio
+async def test_c1000_ac_timer_readback():
+    """Test C1000 AC timer telemetry readback from validated raw key a2."""
+    device = C1000(MOCK_BLE_DEVICE)
+    payload = "a10131a205030a0e0000a3050300000000"
+
+    parameters = device._parse_payload(bytes.fromhex(payload))
+    await device._process_telemetry(parameters)
+
+    assert device.ac_timer_remaining == 3594
+    assert device.ac_timer is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_f8,expected",
+    [
+        ("040201010100010000000000000000000000000000", True),
+        ("040101010100010000000000000000000000000000", False),
+    ],
+)
+async def test_c1000_dc_12v_power_saving_mode_values(
+    raw_f8: str, expected: bool
+) -> None:
+    """Test C1000 DC 12V power saving telemetry values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    await device._process_telemetry({"f8": bytes.fromhex(raw_f8)})
+
+    assert device.dc_12v_power_saving_mode is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_f8,expected",
+    [
+        ("040202010100010000000000000000000000000000", True),
+        ("040201010100010000000000000000000000000000", False),
+    ],
+)
+async def test_c1000_ac_power_saving_mode_values(raw_f8: str, expected: bool) -> None:
+    """Test C1000 AC power saving telemetry values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    await device._process_telemetry({"f8": bytes.fromhex(raw_f8)})
+
+    assert device.ac_power_saving_mode is expected
 
 
 @pytest.mark.asyncio
@@ -84,6 +346,7 @@ from tests.helpers import MockDevice
                 "usb_c2_power": 0,
                 "usb_a1_power": 0,
                 "usb_a2_power": 0,
+                "dc_power_out": 0,
                 "solar_power_in": 0,
                 "power_in": 0,
                 "power_out": 1,
@@ -91,6 +354,7 @@ from tests.helpers import MockDevice
                 "software_version_expansion": "0",
                 "software_version_controller": "1.6.6",
                 "ac_output": PortStatus.NOT_CONNECTED,
+                "dc_output": PortStatus.NOT_CONNECTED,
                 # "solar_port": PortStatus.NOT_CONNECTED,
                 "temperature": 23,
                 "temperature_expansion": 0,
@@ -99,6 +363,7 @@ from tests.helpers import MockDevice
                 "battery_health": 100,
                 "battery_health_expansion": 0,
                 "num_expansion": 0,
+                "light": LightStatus.UNKNOWN,
                 "serial_number": "APC9FE0E27300275",
             },
             id="c1000_idle",
@@ -117,6 +382,7 @@ from tests.helpers import MockDevice
                 "usb_c2_power": 0,
                 "usb_a1_power": 0,
                 "usb_a2_power": 0,
+                "dc_power_out": 0,
                 "solar_power_in": 0,
                 "power_in": 0,
                 "power_out": 979,
@@ -124,6 +390,7 @@ from tests.helpers import MockDevice
                 "software_version_expansion": "0",
                 "software_version_controller": "1.6.6",
                 "ac_output": PortStatus.OUTPUT,
+                "dc_output": PortStatus.NOT_CONNECTED,
                 # "solar_port": PortStatus.NOT_CONNECTED,
                 "temperature": 26,
                 "temperature_expansion": 0,
@@ -150,6 +417,7 @@ from tests.helpers import MockDevice
                 "usb_c2_power": 0,
                 "usb_a1_power": 0,
                 "usb_a2_power": 0,
+                "dc_power_out": 0,
                 "solar_power_in": 0,
                 "power_in": 584,
                 "power_out": 0,
@@ -157,6 +425,7 @@ from tests.helpers import MockDevice
                 "software_version_expansion": "0",
                 "software_version_controller": "1.6.6",
                 "ac_output": PortStatus.NOT_CONNECTED,
+                "dc_output": PortStatus.NOT_CONNECTED,
                 # "solar_port": PortStatus.NOT_CONNECTED,
                 "temperature": 23,
                 "temperature_expansion": 0,
@@ -183,6 +452,7 @@ from tests.helpers import MockDevice
                 "usb_c2_power": 0,
                 "usb_a1_power": 0,
                 "usb_a2_power": 0,
+                "dc_power_out": 0,
                 "solar_power_in": 98,
                 "power_in": 98,
                 "power_out": 3,
@@ -190,6 +460,7 @@ from tests.helpers import MockDevice
                 "software_version_expansion": "0",
                 "software_version_controller": "1.6.6",
                 "ac_output": PortStatus.NOT_CONNECTED,
+                "dc_output": PortStatus.NOT_CONNECTED,
                 # "solar_port": PortStatus.INPUT,
                 "temperature": 23,
                 "temperature_expansion": 0,
@@ -216,6 +487,7 @@ from tests.helpers import MockDevice
                 "usb_c2_power": 16,
                 "usb_a1_power": 11,
                 "usb_a2_power": 1,
+                "dc_power_out": 0,
                 "solar_power_in": 0,
                 "power_in": 0,
                 "power_out": 49,
@@ -223,6 +495,7 @@ from tests.helpers import MockDevice
                 "software_version_expansion": "0",
                 "software_version_controller": "1.6.6",
                 "ac_output": PortStatus.NOT_CONNECTED,
+                "dc_output": PortStatus.NOT_CONNECTED,
                 # "solar_port": PortStatus.NOT_CONNECTED,
                 "temperature": 23,
                 "temperature_expansion": 0,
@@ -234,6 +507,108 @@ from tests.helpers import MockDevice
                 "serial_number": "APC9FE0E27300275",
             },
             id="c1000_usb_load",
+        ),
+        pytest.param(
+            C1000,
+            "a10131a2050300000000a3050300000000a403020000a503020000a603020000a703020000a803020000a903020000aa03020000ab03020000ac03020000ad03020000ae03020000af03020000b003020000b103020000b203020000b30302a600b403020000b503020000b60302ff01b703020000b803029a00b903020000ba0302a600bb03020000bc020100bd020121be020100bf020100c0020100c1020146c2020100c3020164c4020100c5020100c6020100c7020100c8020100c9020100ca020100cb020100cc020101cd020100ce020100cf020100d0110041504345314630463333363030313734d10302c800d203021e00d303023c00d403023c00d503020000d603020000d7020100d8020101d9020102da020132db020100dc020100dd020100de020101e3020100e5020100f7050301000000f815040202010100010000000000000000000000000000f9020102fd0b0041313736315f33304168",
+            {
+                "dc_power_out": 0,
+                "power_out": 0,
+                "dc_output": PortStatus.OUTPUT,
+                "ac_output": PortStatus.NOT_CONNECTED,
+                "battery_percentage": 70,
+                "serial_number": "APCE1F0F33600174",
+            },
+            id="c1000_dc_on_no_load",
+        ),
+        pytest.param(
+            C1000,
+            "a10131a2050300000000a3050300000000a40302ad00a503020000a603020000a703020000a803020000a903020000aa03020000ab03020000ac03020000ad03022600ae03020000af03020000b003022600b103020000b203020000b30302a600b403020000b503020000b60302ff01b703020000b803029a00b903020000ba0302a600bb03020000bc020100bd020121be020100bf020101c0020100c1020146c2020100c3020164c4020100c5020100c6020100c7020100c8020100c9020100ca020100cb020100cc020101cd020100ce020100cf020100d0110041504345314630463333363030313734d10302c800d203021e00d303023c00d403023c00d503020000d603020000d7020100d8020101d9020102da020132db020100dc020100dd020100de020101e3020100e5020100f7050301000000f815040202010100010000000000000000000000000000f9020102fd0b0041313736315f33304168",
+            {
+                "dc_power_out": 38,
+                "power_out": 38,
+                "dc_output": PortStatus.OUTPUT,
+                "ac_output": PortStatus.NOT_CONNECTED,
+                "battery_percentage": 70,
+                "serial_number": "APCE1F0F33600174",
+            },
+            id="c1000_dc_load",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d9020101de020101",
+            {
+                "display_mode": LightStatus.LOW,
+                "is_display_on": True,
+            },
+            id="c1000_display_low",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d9020102de020101",
+            {
+                "display_mode": LightStatus.MEDIUM,
+                "is_display_on": True,
+            },
+            id="c1000_display_medium",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d9020103de020101",
+            {
+                "display_mode": LightStatus.HIGH,
+                "is_display_on": True,
+            },
+            id="c1000_display_high",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d9020103de020100",
+            {
+                "display_mode": LightStatus.OFF,
+                "is_display_on": False,
+            },
+            id="c1000_display_off",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303021400",
+            {
+                "display_timeout": 20,
+            },
+            id="c1000_display_timeout_20s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303021e00",
+            {
+                "display_timeout": 30,
+            },
+            id="c1000_display_timeout_30s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303023c00",
+            {
+                "display_timeout": 60,
+            },
+            id="c1000_display_timeout_60s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303022c01",
+            {
+                "display_timeout": 300,
+            },
+            id="c1000_display_timeout_300s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d303020807",
+            {
+                "display_timeout": 1800,
+            },
+            id="c1000_display_timeout_1800s",
         ),
         pytest.param(
             C1000G2,
@@ -702,6 +1077,338 @@ def test_parser_recovers_one_byte_length_undercount(caplog) -> None:
     assert parameters["a2"].endswith(bytes.fromhex("d15d"))
     assert parameters["a3"] == b"\x04charging_pps_series_c_0002"
     assert "Unexpected end of packet" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        LightStatus.OFF,
+        LightStatus.LOW,
+        LightStatus.MEDIUM,
+        LightStatus.HIGH,
+        LightStatus.SOS,
+    ],
+)
+async def test_c1000_light_value(mode: LightStatus) -> None:
+    """Test C1000 light status parsing from telemetry."""
+    device = C1000(MOCK_BLE_DEVICE)
+    parameters = device._parse_payload(bytes.fromhex(f"dc0201{mode.value:02x}"))
+    await device._process_telemetry(parameters)
+
+    assert device.light is mode
+
+
+@pytest.mark.asyncio
+async def test_c1000_partial_light_telemetry_merges_cached_state() -> None:
+    """Test partial C1000 light telemetry does not replace the cached baseline."""
+    device = C1000(MOCK_BLE_DEVICE)
+    initial = device._parse_payload(
+        bytes.fromhex(
+            "a603020000a703020000a803020000a903020000aa03020000"
+            "ad03020000b003020000c1020150dc020100d9020102"
+            "de020100d303021400"
+        )
+    )
+    await device._process_telemetry(initial)
+
+    callbacks: list[LightStatus] = []
+    device.add_callback(lambda: callbacks.append(device.light))
+    await device._process_telemetry(device._parse_payload(bytes.fromhex("dc020103")))
+
+    assert device.light is LightStatus.HIGH
+    assert device.battery_percentage == 80
+    assert device.power_out == 0
+    assert device.is_display_on is False
+    assert device.display_mode is LightStatus.OFF
+    assert device.display_timeout == 20
+    assert device._data["dc"] == bytes.fromhex("0103")
+    assert callbacks == [LightStatus.HIGH]
+
+
+@pytest.mark.asyncio
+async def test_c1000_partial_power_telemetry_does_not_infer_light_from_b0() -> None:
+    """Test C1000 power telemetry is not treated as light status."""
+    device = C1000(MOCK_BLE_DEVICE)
+    initial = device._parse_payload(
+        bytes.fromhex(
+            "a603020000a703020000a803020000a903020000aa03020000"
+            "ad03020000b003020000c1020150dc020100d9020102"
+            "de020100d303021400"
+        )
+    )
+    await device._process_telemetry(initial)
+
+    async def get_status_update() -> dict[str, bytes]:
+        return device._parse_payload(bytes.fromhex("dc020100"))
+
+    callbacks: list[LightStatus] = []
+    device.add_callback(lambda: callbacks.append(device.light))
+    device.get_status_update = get_status_update
+    await device._process_telemetry(
+        device._parse_payload(bytes.fromhex("a40302560ab003020100bf020101"))
+    )
+    await asyncio.sleep(0.25)
+
+    assert device.light is LightStatus.OFF
+    assert device.power_out == 1
+    assert device.is_display_on is False
+    assert device.display_mode is LightStatus.OFF
+    assert device.display_timeout == 20
+    assert device._data["dc"] == bytes.fromhex("0100")
+    assert callbacks == [LightStatus.OFF]
+
+
+@pytest.mark.asyncio
+async def test_c1000_compact_physical_packet_refreshes_light_from_status() -> None:
+    """Test compact C1000 physical packets refresh actual light telemetry."""
+    device = C1000(MOCK_BLE_DEVICE)
+    initial = device._parse_payload(
+        bytes.fromhex(
+            "a603024600a703020000a803020000a903020000aa03020000"
+            "ad03020000b003024600c1020150dc020100d9020102"
+            "de020100d303021400"
+        )
+    )
+    await device._process_telemetry(initial)
+
+    async def get_status_update() -> dict[str, bytes]:
+        return device._parse_payload(
+            bytes.fromhex(
+                "a603024600a703020000a803020000a903020000aa03020000"
+                "ad03020000b003024800c1020150dc020102d9020102"
+                "de020100d303021400"
+            )
+        )
+
+    callbacks: list[LightStatus] = []
+    device.add_callback(lambda: callbacks.append(device.light))
+    device.get_status_update = get_status_update
+
+    await device._process_telemetry(
+        device._parse_payload(bytes.fromhex("a40302560ab003024800bf020101"))
+    )
+    await asyncio.sleep(0.25)
+
+    assert device.power_out == 72
+    assert device.light is LightStatus.MEDIUM
+    assert device._data["dc"] == bytes.fromhex("0102")
+    assert callbacks == [LightStatus.OFF, LightStatus.MEDIUM]
+
+
+@pytest.mark.asyncio
+async def test_c1000_work_info_burst_debounces_to_single_poll() -> None:
+    """Test rapid work-info fragments coalesce into one control-status poll."""
+    device = C1000(MOCK_BLE_DEVICE)
+    initial = device._parse_payload(
+        bytes.fromhex(
+            "a603020000a703020000a803020000a903020000aa03020000"
+            "ad03020000b003020000c1020150dc020100"
+        )
+    )
+    await device._process_telemetry(initial)
+
+    poll_count = 0
+
+    async def get_status_update() -> dict[str, bytes]:
+        nonlocal poll_count
+        poll_count += 1
+        return device._parse_payload(bytes.fromhex("dc020103"))
+
+    device.get_status_update = get_status_update
+
+    await device._process_telemetry(device._parse_payload(bytes.fromhex("a40302560a")))
+    await device._process_telemetry(
+        device._parse_payload(bytes.fromhex("a40302550ab003020100bf020101"))
+    )
+    await device._process_telemetry(device._parse_payload(bytes.fromhex("b003020200")))
+
+    await asyncio.sleep(0.25)
+
+    assert poll_count == 1
+    assert device.light is LightStatus.HIGH
+
+
+@pytest.mark.asyncio
+async def test_c1000_status_updates_are_serialized() -> None:
+    """Test overlapping C1000 status polls do not duplicate c840 consumers."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
+    first_packet_requested = asyncio.Event()
+    release_first_packet = asyncio.Event()
+    listen_calls = 0
+
+    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
+        nonlocal listen_calls
+        listen_calls += 1
+        if listen_calls == 1:
+            first_packet_requested.set()
+            await release_first_packet.wait()
+        return b"\x00"
+
+    device._listen_for_packet = listen_for_packet
+    device._decrypt_payload = lambda payload: bytes.fromhex("dc020103")
+
+    first = asyncio.create_task(device.get_status_update())
+    await asyncio.wait_for(first_packet_requested.wait(), timeout=1)
+    assert len(client.writes) == 1
+
+    second = asyncio.create_task(device.get_status_update())
+    await asyncio.sleep(0.01)
+    assert len(client.writes) == 1
+
+    release_first_packet.set()
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert len(client.writes) == 2
+    assert listen_calls == 4
+    assert first_result["dc"] == bytes.fromhex("0103")
+    assert second_result["dc"] == bytes.fromhex("0103")
+
+
+@pytest.mark.asyncio
+async def test_c1000_command_waits_for_status_update_transaction() -> None:
+    """Test C1000 commands wait while a status update owns c840 responses."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
+    first_packet_requested = asyncio.Event()
+    release_first_packet = asyncio.Event()
+    listen_calls = 0
+
+    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
+        nonlocal listen_calls
+        listen_calls += 1
+        if listen_calls == 1:
+            first_packet_requested.set()
+            await release_first_packet.wait()
+        return b"\x00"
+
+    device._listen_for_packet = listen_for_packet
+    device._decrypt_payload = lambda payload: bytes.fromhex("dc020103")
+
+    status_update = asyncio.create_task(device.get_status_update())
+    await asyncio.wait_for(first_packet_requested.wait(), timeout=1)
+    assert len(client.writes) == 1
+
+    command = asyncio.create_task(device.set_light_mode(LightStatus.LOW))
+    await asyncio.sleep(0.01)
+    assert len(client.writes) == 1
+
+    release_first_packet.set()
+    await asyncio.gather(status_update, command)
+
+    assert len(client.writes) == 2
+    _, command_packet = client.writes[1]
+    _, cmd, _ = device._split_packet(command_packet)
+    assert cmd == bytes.fromhex("404f")
+
+
+@pytest.mark.asyncio
+async def test_unclaimed_status_response_fragment_is_ignored(caplog) -> None:
+    """Test stale c840 status fragments do not enter unknown-message decrypt."""
+    caplog.set_level(logging.DEBUG)
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    packet = device._build_packet(
+        bytes.fromhex("03010f"), bytes.fromhex("c840"), bytes.fromhex("00")
+    )
+
+    await device._process_notification(client, 0, packet)
+
+    assert "Ignoring unclaimed status response fragment" in caplog.text
+    assert "Exception decrypting unknown message type" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        LightStatus.OFF,
+        LightStatus.LOW,
+        LightStatus.MEDIUM,
+        LightStatus.HIGH,
+        LightStatus.SOS,
+    ],
+)
+async def test_c1000_set_light_mode_payload(mode: LightStatus) -> None:
+    """Test C1000 light control payloads."""
+    device = C1000(MOCK_BLE_DEVICE)
+    sent: dict[str, bytes] = {}
+
+    async def fake_send_command(cmd: bytes, payload: bytes) -> None:
+        sent["cmd"] = cmd
+        sent["payload"] = payload
+
+    device._send_command = fake_send_command
+
+    await device.set_light_mode(mode)
+
+    assert sent["cmd"].hex() == "404f"
+    assert sent["payload"].hex() == f"a10121a20201{mode.value:02x}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        LightStatus.OFF,
+        LightStatus.LOW,
+        LightStatus.MEDIUM,
+        LightStatus.HIGH,
+        LightStatus.SOS,
+    ],
+)
+async def test_c1000_set_light_mode_confirmed(mode: LightStatus) -> None:
+    """Test C1000 confirmed light controls use fresh telemetry."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
+
+    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
+        return b"\x00"
+
+    device._listen_for_packet = listen_for_packet
+    device._decrypt_payload = lambda payload: bytes([0xDC, 0x02, 0x01, mode.value])
+
+    assert await device.set_light_mode_confirmed(mode) is True
+    assert device.light is mode
+    assert len(client.writes) == 2
+    _, light_packet = client.writes[0]
+    _, status_packet = client.writes[1]
+    _, light_cmd, _ = device._split_packet(light_packet)
+    _, status_cmd, _ = device._split_packet(status_packet)
+    assert light_cmd == bytes.fromhex("404f")
+    assert status_cmd == bytes.fromhex("4040")
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_light_mode_confirmed_mismatch() -> None:
+    """Test C1000 light confirmation fails when telemetry disagrees."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._shared_secret = C1000_TEST_SECRET
+    device._negotiation_timestamp = 100.0
+
+    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
+        return b"\x00"
+
+    device._listen_for_packet = listen_for_packet
+    device._decrypt_payload = lambda payload: bytes(
+        [0xDC, 0x02, 0x01, LightStatus.LOW.value]
+    )
+
+    assert await device.set_light_mode_confirmed(LightStatus.HIGH) is False
+    assert device.light is LightStatus.LOW
 
 
 @pytest.mark.asyncio
