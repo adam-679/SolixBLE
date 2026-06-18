@@ -40,7 +40,7 @@ command -v frida >/dev/null 2>&1 || { echo >&2 "frida is required!"; exit 1; }
 echo "Setting up folders..."
 
 # The current folder
-WORKING_FOLDER=$(pwd)
+WORKING_FOLDER="$(cd "$(dirname "$0")" && pwd)"
 
 # Folder to put all data in
 LOG_FOLDER="${WORKING_FOLDER}/logs"
@@ -60,7 +60,7 @@ adb -s $DEVICE forward tcp:49152 tcp:49152
 
 # Open the app and execute the Frida script
 adb -s $DEVICE shell monkey -p com.anker.charging 1 \
-    && frida -H 127.0.0.1:49152 -n Gadget -l frida.js \
+    && frida -H 127.0.0.1:49152 -n Gadget -l "${WORKING_FOLDER}/frida.js" \
     2>&1 | tee -a "${LOG_FOLDER}/${TIMESTAMP}.log"
 
 echo "Done!"
