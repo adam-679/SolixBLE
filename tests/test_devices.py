@@ -114,6 +114,36 @@ async def assert_c1000_command_packet(
             "4042",
             "a10121a2050300000000",
         ),
+        (
+            lambda device: device.set_dc_12v_power_saving_mode(True),
+            "4076",
+            "a10121a2020101",
+        ),
+        (
+            lambda device: device.set_dc_12v_power_saving_mode(False),
+            "4076",
+            "a10121a2020100",
+        ),
+        (
+            lambda device: device.set_ac_power_saving_mode(True),
+            "4077",
+            "a10121a2020101",
+        ),
+        (
+            lambda device: device.set_ac_power_saving_mode(False),
+            "4077",
+            "a10121a2020100",
+        ),
+        (
+            lambda device: device.set_dc_12v_auto_on(True),
+            "4079",
+            "a10121a2020101",
+        ),
+        (
+            lambda device: device.set_dc_12v_auto_on(False),
+            "4079",
+            "a10121a2020100",
+        ),
     ],
 )
 async def test_c1000_command_packet(monkeypatch, action, cmd, payload_hex):
@@ -172,6 +202,23 @@ async def test_c1000_ac_recharge_power_limit_readback(payload, expected_watts):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "raw_f7,expected",
+    [
+        ("0301000000", True),
+        ("0300000000", False),
+    ],
+)
+async def test_c1000_dc_12v_auto_on_values(raw_f7: str, expected: bool) -> None:
+    """Test C1000 DC 12V auto on telemetry values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    await device._process_telemetry({"f7": bytes.fromhex(raw_f7)})
+
+    assert device.dc_12v_auto_on is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "payload,expected_enabled",
     [
         ("e5020100", False),
@@ -213,6 +260,42 @@ async def test_c1000_ac_timer_readback():
 
     assert device.ac_timer_remaining == 3594
     assert device.ac_timer is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_f8,expected",
+    [
+        ("040201010100010000000000000000000000000000", True),
+        ("040101010100010000000000000000000000000000", False),
+    ],
+)
+async def test_c1000_dc_12v_power_saving_mode_values(
+    raw_f8: str, expected: bool
+) -> None:
+    """Test C1000 DC 12V power saving telemetry values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    await device._process_telemetry({"f8": bytes.fromhex(raw_f8)})
+
+    assert device.dc_12v_power_saving_mode is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_f8,expected",
+    [
+        ("040202010100010000000000000000000000000000", True),
+        ("040201010100010000000000000000000000000000", False),
+    ],
+)
+async def test_c1000_ac_power_saving_mode_values(raw_f8: str, expected: bool) -> None:
+    """Test C1000 AC power saving telemetry values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    await device._process_telemetry({"f8": bytes.fromhex(raw_f8)})
+
+    assert device.ac_power_saving_mode is expected
 
 
 @pytest.mark.asyncio

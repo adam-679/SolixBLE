@@ -28,6 +28,9 @@ CMD_DISPLAY_ON_OFF = "4052"
 CMD_AC_RECHARGE_POWER = "4044"
 CMD_ULTRAFAST_RECHARGE = "405e"
 CMD_DC_TIMER = "4043"
+CMD_DC_12V_POWER_SAVING = "4076"
+CMD_AC_POWER_SAVING = "4077"
+CMD_DC_12V_AUTO_ON = "4079"
 
 PAYLOAD_ON = "a10121a2020101"
 PAYLOAD_OFF = "a10121a2020100"
@@ -387,14 +390,34 @@ class C1000(SolixBLEDevice):
         return PortStatus(self._parse_int("cc", begin=1))
 
     @property
-    def light(self) -> LightStatus:
-        """Status of the LED light bar.
+    def dc_12v_auto_on(self) -> bool | None:
+        """Configured DC 12V auto on mode.
 
-        :returns: Status of the LED light bar.
+        :returns: True if DC 12V auto on is enabled, False if disabled.
         """
-        if self._data is None or "dc" not in self._data:
-            return LightStatus.UNKNOWN
-        return LightStatus(self._parse_int("dc", begin=1))
+        if self._data is None or "f7" not in self._data:
+            return DEFAULT_METADATA_BOOL
+        return bool(self._parse_int("f7", begin=1, end=2))
+
+    @property
+    def dc_12v_power_saving_mode(self) -> bool | None:
+        """Configured DC 12V power saving mode.
+
+        :returns: True if DC 12V power saving is enabled, False if disabled.
+        """
+        if self._data is None or "f8" not in self._data:
+            return DEFAULT_METADATA_BOOL
+        return self._parse_int("f8", begin=1, end=2) == 2
+
+    @property
+    def ac_power_saving_mode(self) -> bool | None:
+        """Configured AC power saving mode.
+
+        :returns: True if AC power saving is enabled, False if disabled.
+        """
+        if self._data is None or "f8" not in self._data:
+            return DEFAULT_METADATA_BOOL
+        return self._parse_int("f8", begin=2, end=3) == 2
 
     @property
     def display_timeout(self) -> int:
@@ -427,6 +450,16 @@ class C1000(SolixBLEDevice):
         if self._data is None or "de" not in self._data:
             return DEFAULT_METADATA_BOOL
         return bool(self._parse_int("de", begin=1))
+
+    @property
+    def light(self) -> LightStatus:
+        """Status of the LED light bar.
+
+        :returns: Status of the LED light bar.
+        """
+        if self._data is None or "dc" not in self._data:
+            return LightStatus.UNKNOWN
+        return LightStatus(self._parse_int("dc", begin=1))
 
     @property
     def temperature(self) -> int:
@@ -580,6 +613,42 @@ class C1000(SolixBLEDevice):
             cmd=bytes.fromhex(CMD_AC_TIMER),
             payload=bytes.fromhex(PAYLOAD_TIMER_SECONDS)
             + seconds.to_bytes(length=4, byteorder="little", signed=False),
+        )
+
+    async def set_dc_12v_power_saving_mode(self, enabled: bool) -> None:
+        """Set the DC 12V power saving mode.
+
+        :param enabled: True to enable, False to disable.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_DC_12V_POWER_SAVING),
+            payload=bytes.fromhex(PAYLOAD_ON if enabled else PAYLOAD_OFF),
+        )
+
+    async def set_ac_power_saving_mode(self, enabled: bool) -> None:
+        """Set the AC power saving mode.
+
+        :param enabled: True to enable, False to disable.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_AC_POWER_SAVING),
+            payload=bytes.fromhex(PAYLOAD_ON if enabled else PAYLOAD_OFF),
+        )
+
+    async def set_dc_12v_auto_on(self, enabled: bool) -> None:
+        """Set the DC 12V auto on mode.
+
+        :param enabled: True to enable, False to disable.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_DC_12V_AUTO_ON),
+            payload=bytes.fromhex(PAYLOAD_ON if enabled else PAYLOAD_OFF),
         )
 
     async def set_light_mode(self, mode: LightStatus) -> None:
