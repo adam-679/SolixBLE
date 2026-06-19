@@ -23,6 +23,7 @@ CMD_STATUS_UPDATE = "4040"
 CMD_AC_TIMER = "4042"
 CMD_LIGHT_MODE = "404f"
 CMD_DISPLAY_MODE = "404c"
+CMD_DEVICE_TIMEOUT = "4045"
 CMD_DISPLAY_TIMEOUT = "4046"
 CMD_DISPLAY_ON_OFF = "4052"
 CMD_AC_RECHARGE_POWER = "4044"
@@ -43,10 +44,11 @@ PAYLOAD_TIMER_SECONDS = "a10121a20503"
 MIN_AC_RECHARGE_POWER = 200
 MAX_AC_RECHARGE_POWER = 1000
 MAX_TIMER_SECONDS = 23 * 60 * 60 + 55 * 60
+DEVICE_TIMEOUT_MINUTES = (0, 30, 60, 120, 240, 360, 720, 1440)
 
 _LOGGER = logging.getLogger(__name__)
 
-C1000_CONTROL_TELEMETRY_KEYS = {"d3", "d9", "dc", "de", "dd"}
+C1000_CONTROL_TELEMETRY_KEYS = {"d2", "d3", "d9", "dc", "de", "dd"}
 C1000_WORK_INFO_KEYS = {"a4", "b0", "bf"}
 _CONTROL_REFRESH_DEBOUNCE_SECONDS = 0.2
 
@@ -424,6 +426,14 @@ class C1000(SolixBLEDevice):
         return self._parse_int("f8", begin=2, end=3) == 2
 
     @property
+    def device_timeout(self) -> int:
+        """Configured device timeout in minutes.
+
+        :returns: Configured device timeout or default int value.
+        """
+        return self._parse_known_int("d2", begin=1)
+
+    @property
     def display_timeout(self) -> int:
         """Configured display timeout in seconds.
 
@@ -723,6 +733,26 @@ class C1000(SolixBLEDevice):
             cmd=bytes.fromhex(CMD_DISPLAY_TIMEOUT),
             payload=bytes.fromhex(PAYLOAD_TIMEOUT_TIME)
             + timeout.value.to_bytes(length=2, byteorder="little", signed=False),
+        )
+
+    async def set_device_timeout(self, minutes: int) -> None:
+        """Set the device timeout.
+
+        :param minutes: Timeout in minutes. Use 0 to disable.
+        :raises ValueError: If requested timeout is invalid.
+        :raises ConnectionError: If not connected to device.
+        :raises BleakError: If command transmission fails.
+        """
+        if minutes not in DEVICE_TIMEOUT_MINUTES:
+            raise ValueError(
+                "Device timeout must be one of "
+                + ", ".join(str(value) for value in DEVICE_TIMEOUT_MINUTES)
+                + " minutes"
+            )
+        await self._send_command(
+            cmd=bytes.fromhex(CMD_DEVICE_TIMEOUT),
+            payload=bytes.fromhex(PAYLOAD_TIMEOUT_TIME)
+            + minutes.to_bytes(length=2, byteorder="little", signed=False),
         )
 
     async def set_ac_recharge_power(self, watts: int) -> None:

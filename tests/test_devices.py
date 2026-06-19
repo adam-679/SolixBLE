@@ -200,6 +200,16 @@ async def test_c300dc_get_status_update() -> None:
             "4079",
             "a10121a2020100",
         ),
+        (
+            lambda device: device.set_device_timeout(0),
+            "4045",
+            "a10121a203020000",
+        ),
+        (
+            lambda device: device.set_device_timeout(1440),
+            "4045",
+            "a10121a20302a005",
+        ),
     ],
 )
 async def test_c1000_command_packet(monkeypatch, action, cmd, payload_hex):
@@ -248,6 +258,15 @@ async def test_c1000_ac_timer_readback():
 
     assert device.ac_timer_remaining == 3594
     assert device.ac_timer is not None
+
+
+@pytest.mark.asyncio
+async def test_c1000_set_device_timeout_rejects_unknown_value():
+    """Test C1000 device timeout validates supported minute values."""
+    device = C1000(MOCK_BLE_DEVICE)
+
+    with pytest.raises(ValueError):
+        await device.set_device_timeout(31)
 
 
 @pytest.mark.asyncio
@@ -886,6 +905,46 @@ async def test_c300dc_invalid_control_values(action) -> None:
                 "display_timeout": 1800,
             },
             id="c1000_display_timeout_1800s",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d203021e00",
+            {
+                "device_timeout": 30,
+            },
+            id="c1000_device_timeout_30m",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d203023c00",
+            {
+                "device_timeout": 60,
+            },
+            id="c1000_device_timeout_1h",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d20302f000",
+            {
+                "device_timeout": 240,
+            },
+            id="c1000_device_timeout_4h",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d20302d002",
+            {
+                "device_timeout": 720,
+            },
+            id="c1000_device_timeout_12h",
+        ),
+        pytest.param(
+            C1000,
+            "a10131d203020000",
+            {
+                "device_timeout": 0,
+            },
+            id="c1000_device_timeout_never",
         ),
         pytest.param(
             C1000G2,
