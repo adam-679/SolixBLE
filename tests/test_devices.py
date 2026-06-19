@@ -135,12 +135,12 @@ async def assert_c1000_command_packet(
             "a10121a2020100",
         ),
         (
-            lambda device: device.set_dc_12v_auto_on(True),
+            lambda device: device.set_output_auto_recovery(True),
             "4079",
             "a10121a2020101",
         ),
         (
-            lambda device: device.set_dc_12v_auto_on(False),
+            lambda device: device.set_output_auto_recovery(False),
             "4079",
             "a10121a2020100",
         ),
@@ -208,13 +208,15 @@ async def test_c1000_ac_recharge_power_limit_readback(payload, expected_watts):
         ("0300000000", False),
     ],
 )
-async def test_c1000_dc_12v_auto_on_values(raw_f7: str, expected: bool) -> None:
-    """Test C1000 DC 12V auto on telemetry values."""
+async def test_c1000_output_auto_recovery_values(
+    raw_f7: str, expected: bool
+) -> None:
+    """Test C1000 output auto recovery telemetry values."""
     device = C1000(MOCK_BLE_DEVICE)
 
     await device._process_telemetry({"f7": bytes.fromhex(raw_f7)})
 
-    assert device.dc_12v_auto_on is expected
+    assert device.output_auto_recovery is expected
 
 
 @pytest.mark.asyncio
