@@ -30,7 +30,7 @@ CMD_ULTRAFAST_RECHARGE = "405e"
 CMD_DC_TIMER = "4043"
 CMD_DC_12V_POWER_SAVING = "4076"
 CMD_AC_POWER_SAVING = "4077"
-CMD_DC_12V_AUTO_ON = "4079"
+CMD_OUTPUT_AUTO_RECOVERY = "4079"
 
 PAYLOAD_ON = "a10121a2020101"
 PAYLOAD_OFF = "a10121a2020100"
@@ -390,10 +390,14 @@ class C1000(SolixBLEDevice):
         return PortStatus(self._parse_int("cc", begin=1))
 
     @property
-    def dc_12v_auto_on(self) -> bool | None:
-        """Configured DC 12V auto on mode.
+    def output_auto_recovery(self) -> bool | None:
+        """Configured output auto recovery mode.
 
-        :returns: True if DC 12V auto on is enabled, False if disabled.
+        If AC output or CarPort output was on and closes because the battery
+        drops below the discharge limit, the output reopens when the battery
+        recovers to the discharge limit plus 10%.
+
+        :returns: True if output auto recovery is enabled, False if disabled.
         """
         if self._data is None or "f7" not in self._data:
             return DEFAULT_METADATA_BOOL
@@ -639,15 +643,15 @@ class C1000(SolixBLEDevice):
             payload=bytes.fromhex(PAYLOAD_ON if enabled else PAYLOAD_OFF),
         )
 
-    async def set_dc_12v_auto_on(self, enabled: bool) -> None:
-        """Set the DC 12V auto on mode.
+    async def set_output_auto_recovery(self, enabled: bool) -> None:
+        """Set the output auto recovery mode.
 
         :param enabled: True to enable, False to disable.
         :raises ConnectionError: If not connected to device.
         :raises BleakError: If command transmission fails.
         """
         await self._send_command(
-            cmd=bytes.fromhex(CMD_DC_12V_AUTO_ON),
+            cmd=bytes.fromhex(CMD_OUTPUT_AUTO_RECOVERY),
             payload=bytes.fromhex(PAYLOAD_ON if enabled else PAYLOAD_OFF),
         )
 
