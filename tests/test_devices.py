@@ -1649,11 +1649,14 @@ async def test_c1000_command_waits_for_status_update_transaction() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unclaimed_status_response_fragment_is_ignored(caplog) -> None:
+@pytest.mark.parametrize("device_class", (C1000, C300DC))
+async def test_unclaimed_status_response_fragment_is_ignored(
+    device_class: type[SolixBLEDevice], caplog
+) -> None:
     """Test stale c840 status fragments do not enter unknown-message decrypt."""
     caplog.set_level(logging.DEBUG)
     client = ConnectedClient()
-    device = C1000(MOCK_BLE_DEVICE)
+    device = device_class(MOCK_BLE_DEVICE)
     device._client = client
     packet = device._build_packet(
         bytes.fromhex("03010f"), bytes.fromhex("c840"), bytes.fromhex("00")
@@ -1666,13 +1669,15 @@ async def test_unclaimed_status_response_fragment_is_ignored(caplog) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("device_class", (C1000, C300DC))
 async def test_completed_status_response_future_is_ignored_as_stale_fragment(
+    device_class: type[SolixBLEDevice],
     caplog,
 ) -> None:
     """Test duplicate c840 packets do not reset already-completed futures."""
     caplog.set_level(logging.DEBUG)
     client = ConnectedClient()
-    device = C1000(MOCK_BLE_DEVICE)
+    device = device_class(MOCK_BLE_DEVICE)
     device._client = client
     pattern = bytes.fromhex("03010f")
     cmd = bytes.fromhex("c840")
