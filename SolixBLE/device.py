@@ -646,13 +646,22 @@ class SolixBLEDevice:
 
         # If the packet has a future registered then we just trigger that
         # future instead of processing it here
-        if pattern + cmd in self._packet_futures:
+        packet_key = pattern + cmd
+        if packet_key in self._packet_futures:
             _LOGGER.debug(
                 "Packet has future(s) registered. Triggering future(s) and ignoring packet..."
             )
-            for future in self._packet_futures[pattern + cmd]:
-                future.set_result(payload)
-            return
+            active_futures = [
+                future
+                for future in self._packet_futures[packet_key]
+                if not future.done()
+            ]
+            if active_futures:
+                for future in active_futures:
+                    future.set_result(payload)
+                self._packet_futures[packet_key] = active_futures
+                return
+            self._packet_futures.pop(packet_key, None)
 
         # Match against common message types
         match pattern.hex():
@@ -783,6 +792,11 @@ class SolixBLEDevice:
                 )
                 parameters = self._parse_payload(payload)
                 _LOGGER.debug(f"Parameters: {self._parameters_to_str(parameters)}")
+                if "a1" not in parameters:
+                    _LOGGER.warning(
+                        "Ignoring negotiation stage 5 response without public key"
+                    )
+                    return
 
                 # Extract public key of device from payload
                 device_public_key_bytes = bytes.fromhex("04") + parameters["a1"]

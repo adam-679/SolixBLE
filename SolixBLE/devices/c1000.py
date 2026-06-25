@@ -611,24 +611,6 @@ class C1000(SolixBLEDevice):
             cmd=bytes.fromhex(CMD_DC_OUTPUT), payload=bytes.fromhex(PAYLOAD_OFF)
         )
 
-    async def set_ac_timer(self, seconds: int) -> None:
-        """Set the AC output timer.
-
-        :param seconds: Number of seconds until the AC output turns off. Use 0 to disable.
-        :raises ValueError: If seconds is outside the encodable range.
-        :raises ConnectionError: If not connected to device.
-        :raises BleakError: If command transmission fails.
-        """
-        if not 0 <= seconds <= MAX_TIMER_SECONDS:
-            raise ValueError(
-                f"Output timer must be between 0 and {MAX_TIMER_SECONDS} seconds"
-            )
-        await self._send_command(
-            cmd=bytes.fromhex(CMD_AC_TIMER),
-            payload=bytes.fromhex(PAYLOAD_TIMER_SECONDS)
-            + seconds.to_bytes(length=4, byteorder="little", signed=False),
-        )
-
     async def set_dc_12v_power_saving_mode(self, enabled: bool) -> None:
         """Set the DC 12V power saving mode.
 

@@ -1666,6 +1666,48 @@ async def test_unclaimed_status_response_fragment_is_ignored(caplog) -> None:
 
 
 @pytest.mark.asyncio
+async def test_completed_status_response_future_is_ignored_as_stale_fragment(
+    caplog,
+) -> None:
+    """Test duplicate c840 packets do not reset already-completed futures."""
+    caplog.set_level(logging.DEBUG)
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    pattern = bytes.fromhex("03010f")
+    cmd = bytes.fromhex("c840")
+    future = asyncio.get_running_loop().create_future()
+    future.set_result(bytes.fromhex("00"))
+    device._packet_futures[pattern + cmd] = [future]
+    packet = device._build_packet(pattern, cmd, bytes.fromhex("01"))
+
+    await device._process_notification(client, 0, packet)
+
+    assert pattern + cmd not in device._packet_futures
+    assert future.result() == bytes.fromhex("00")
+    assert "Ignoring unclaimed status response fragment" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_negotiation_stage_5_without_public_key_is_ignored(caplog) -> None:
+    """Test malformed stage 5 negotiation packets do not raise KeyError."""
+    caplog.set_level(logging.WARNING)
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._parse_payload = lambda payload: {}
+    packet = device._build_packet(
+        bytes.fromhex("030001"), bytes.fromhex("0821"), bytes.fromhex("00")
+    )
+
+    await device._process_notification(client, 0, packet)
+
+    assert client.writes == []
+    assert device._shared_secret is None
+    assert "Ignoring negotiation stage 5 response without public key" in caplog.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mode",
     [
