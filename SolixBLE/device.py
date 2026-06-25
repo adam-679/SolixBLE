@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from collections.abc import Callable
 from datetime import datetime
 from functools import partial
@@ -70,10 +71,14 @@ class SolixBLEDevice:
         self._negotiation_timestamp: float | None = None
         self._state_changed_callbacks: list[Callable[[], None]] = []
         self._packet_futures: dict[bytes, list[asyncio.Future]] = {}
+        self._packet_inboxes: dict[bytes, asyncio.Queue[bytes]] = {}
         self._auto_reconnect_task: asyncio.Task | None = None
         self._disconnect_event: asyncio.Event = asyncio.Event()
         self._connection_attempts: int = 0
         self._shared_secret: bytes | None = None
+        self._command_write_response = True
+        self._command_write_without_response_size: int | None = None
+        self._command_write_properties: tuple[str, ...] = ()
 
     def add_callback(self, function: Callable[[], None]) -> None:
         """Register a callback to be run on state updates.
@@ -148,6 +153,7 @@ class SolixBLEDevice:
         )
         try:
             _LOGGER.debug(f"Subscribing to notifications from device '{self.name}'!")
+            self._resolve_command_write_mode()
             await self._client.start_notify(
                 UUID_TELEMETRY, partial(self._process_notification, self._client)
             )
@@ -647,6 +653,13 @@ class SolixBLEDevice:
         # If the packet has a future registered then we just trigger that
         # future instead of processing it here
         packet_key = pattern + cmd
+        if packet_key in self._packet_inboxes:
+            _LOGGER.debug(
+                "Packet has inbox registered. Queueing payload and ignoring packet..."
+            )
+            self._packet_inboxes[packet_key].put_nowait(payload)
+            return
+
         if packet_key in self._packet_futures:
             _LOGGER.debug(
                 "Packet has future(s) registered. Triggering future(s) and ignoring packet..."
@@ -745,7 +758,9 @@ class SolixBLEDevice:
                 _LOGGER.debug(f"Parameters: {self._parameters_to_str(parameters)}")
                 _LOGGER.debug("Sending stage 1 response message...")
                 return await self._client.write_gatt_char(
-                    UUID_COMMAND, bytes.fromhex(NEGOTIATION_COMMAND_1)
+                    UUID_COMMAND,
+                    bytes.fromhex(NEGOTIATION_COMMAND_1),
+                    response=True,
                 )
 
             # Negotiation stage 2
@@ -757,7 +772,9 @@ class SolixBLEDevice:
                 _LOGGER.debug(f"Parameters: {self._parameters_to_str(parameters)}")
                 _LOGGER.debug("Sending stage 2 response message...")
                 return await self._client.write_gatt_char(
-                    UUID_COMMAND, bytes.fromhex(NEGOTIATION_COMMAND_2)
+                    UUID_COMMAND,
+                    bytes.fromhex(NEGOTIATION_COMMAND_2),
+                    response=True,
                 )
 
             # Negotiation stage 3
@@ -770,7 +787,9 @@ class SolixBLEDevice:
                 self._negotiation_timestamp = time.time()
                 _LOGGER.debug("Sending stage 3 response message...")
                 return await self._client.write_gatt_char(
-                    UUID_COMMAND, bytes.fromhex(NEGOTIATION_COMMAND_3)
+                    UUID_COMMAND,
+                    bytes.fromhex(NEGOTIATION_COMMAND_3),
+                    response=True,
                 )
 
             # Negotiation stage 4
@@ -782,7 +801,9 @@ class SolixBLEDevice:
                 _LOGGER.debug(f"Parameters: {self._parameters_to_str(parameters)}")
                 _LOGGER.debug("Sending stage 4 response message...")
                 return await self._client.write_gatt_char(
-                    UUID_COMMAND, bytes.fromhex(NEGOTIATION_COMMAND_4)
+                    UUID_COMMAND,
+                    bytes.fromhex(NEGOTIATION_COMMAND_4),
+                    response=True,
                 )
 
             # Negotiation stage 5
@@ -817,7 +838,9 @@ class SolixBLEDevice:
 
                 _LOGGER.debug("Sending stage 5 response message...")
                 return await self._client.write_gatt_char(
-                    UUID_COMMAND, bytes.fromhex(NEGOTIATION_COMMAND_5)
+                    UUID_COMMAND,
+                    bytes.fromhex(NEGOTIATION_COMMAND_5),
+                    response=True,
                 )
 
             # Negotiation stage 6 (Optional)
@@ -897,7 +920,89 @@ class SolixBLEDevice:
         _LOGGER.debug(f"Sending encrypted packet: {packet.hex()}")
 
         # Send packet
-        await self._client.write_gatt_char(UUID_COMMAND, packet)
+        await self._write_command_packet(packet)
+
+    def _resolve_command_write_mode(self) -> None:
+        """Resolve the explicit write response mode for encrypted commands."""
+        characteristic = None
+        services = getattr(self._client, "services", None)
+        if services is not None:
+            get_characteristic = getattr(services, "get_characteristic", None)
+            if get_characteristic is not None:
+                characteristic = get_characteristic(UUID_COMMAND)
+
+        if characteristic is None:
+            _LOGGER.debug(
+                "Command characteristic properties unavailable; using response writes"
+            )
+            self._command_write_response = True
+            self._command_write_properties = ()
+            self._command_write_without_response_size = None
+            return
+
+        properties = tuple(getattr(characteristic, "properties", ()) or ())
+        max_write_without_response_size = getattr(
+            characteristic, "max_write_without_response_size", None
+        )
+        if "write" in properties:
+            response = True
+        elif "write-without-response" in properties:
+            response = False
+        else:
+            raise BleakError(
+                f"Command characteristic does not support writes: {properties}"
+            )
+
+        self._command_write_response = response
+        self._command_write_properties = properties
+        self._command_write_without_response_size = max_write_without_response_size
+        _LOGGER.debug(
+            "Command characteristic write mode: properties=%s max_write_without_response_size=%s response=%s",
+            properties,
+            max_write_without_response_size,
+            response,
+        )
+
+    async def _write_command_packet(self, packet: bytes) -> None:
+        """Write an encrypted command packet with an explicit response mode."""
+        if not self._command_write_response:
+            max_size = self._command_write_without_response_size
+            if max_size is not None and len(packet) > max_size:
+                raise BleakError(
+                    "Command packet exceeds max write-without-response size: "
+                    f"{len(packet)} > {max_size}"
+                )
+        start = time.perf_counter()
+        try:
+            await self._client.write_gatt_char(
+                UUID_COMMAND,
+                packet,
+                response=self._command_write_response,
+            )
+        finally:
+            _LOGGER.debug(
+                "Command write complete: cmd=%s length=%s properties=%s max_write_without_response_size=%s response=%s duration_ms=%.3f",
+                packet[7:9].hex() if len(packet) >= 9 else "",
+                len(packet),
+                self._command_write_properties,
+                self._command_write_without_response_size,
+                self._command_write_response,
+                (time.perf_counter() - start) * 1000,
+            )
+
+    @asynccontextmanager
+    async def _packet_inbox(self, pattern: bytes, cmd: bytes):
+        """Collect matching packet payloads in FIFO order for multi-part reads."""
+        key = pattern + cmd
+        if key in self._packet_inboxes:
+            raise RuntimeError(f"packet inbox already active for {key.hex()}")
+        queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._packet_inboxes[key] = queue
+        try:
+            yield queue
+        finally:
+            if self._packet_inboxes.get(key) is queue:
+                self._packet_inboxes.pop(key, None)
 
     def _register_future(
         self, future: asyncio.Future, pattern: bytes, cmd: bytes
@@ -956,7 +1061,7 @@ class SolixBLEDevice:
             self._register_future(future, pattern, cmd)
             return await asyncio.wait_for(future, timeout)
         except asyncio.CancelledError:
-            return None
+            raise
         finally:
             self._deregister_future(future, pattern, cmd)
 
@@ -1113,6 +1218,10 @@ class SolixBLEDevice:
         self._last_packet_timestamp = None
         self._negotiation_timestamp = None
         self._packet_futures: dict[bytes, list[asyncio.Future]] = {}
+        self._packet_inboxes: dict[bytes, asyncio.Queue[bytes]] = {}
+        self._command_write_response = True
+        self._command_write_without_response_size = None
+        self._command_write_properties = ()
 
     def __str__(self) -> str:
         """Return string representation of device state.

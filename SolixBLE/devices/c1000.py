@@ -51,6 +51,7 @@ _LOGGER = logging.getLogger(__name__)
 C1000_CONTROL_TELEMETRY_KEYS = {"d2", "d3", "d9", "dc", "de", "dd"}
 C1000_WORK_INFO_KEYS = {"a4", "b0", "bf"}
 _CONTROL_REFRESH_DEBOUNCE_SECONDS = 0.2
+_STATUS_RESPONSE_TIMEOUT_SECONDS = 2
 
 
 class C1000(SolixBLEDevice):
@@ -124,8 +125,13 @@ class C1000(SolixBLEDevice):
 
     def _schedule_control_status_refresh(self) -> None:
         """Debounce background polls for light/display state after physical changes."""
-        if self._control_refresh_debounce_task is not None:
-            self._control_refresh_debounce_task.cancel()
+        if self._control_refresh_in_flight:
+            return
+        if (
+            self._control_refresh_debounce_task is not None
+            and not self._control_refresh_debounce_task.done()
+        ):
+            return
 
         async def debounced_refresh() -> None:
             try:
@@ -133,10 +139,22 @@ class C1000(SolixBLEDevice):
                 await self._refresh_control_status()
             except asyncio.CancelledError:
                 raise
+            finally:
+                if self._control_refresh_debounce_task is asyncio.current_task():
+                    self._control_refresh_debounce_task = None
 
         self._control_refresh_debounce_task = asyncio.get_running_loop().create_task(
             debounced_refresh()
         )
+
+    def _cancel_pending_control_status_refresh(self) -> None:
+        """Cancel a debounced refresh that has not started packet collection."""
+        if self._control_refresh_in_flight:
+            return
+        task = self._control_refresh_debounce_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._control_refresh_debounce_task = None
 
     @property
     def ac_timer_remaining(self) -> int:
@@ -564,6 +582,7 @@ class C1000(SolixBLEDevice):
 
     async def _send_command(self, cmd: bytes, payload: bytes) -> None:
         """Send a C1000 command without overlapping status-response reads."""
+        self._cancel_pending_control_status_refresh()
         async with self._operation_lock:
             await self._send_command_unlocked(cmd, payload)
 
@@ -843,22 +862,19 @@ class C1000(SolixBLEDevice):
 
     async def _get_status_update_unlocked(self) -> dict[str, bytes]:
         """Request a status update while the caller owns the operation lock."""
-        await self._send_command_unlocked(
-            cmd=bytes.fromhex(CMD_STATUS_UPDATE),
-            payload=bytes.fromhex(PAYLOAD_STATUS_UPDATE),
-        )
-
-        packet_1 = await self._listen_for_packet(
+        async with self._packet_inbox(
             bytes.fromhex("03010f"), bytes.fromhex("c840")
-        )
-        if not packet_1:
-            raise TimeoutError("Timed out waiting for packet 1!")
-
-        packet_2 = await self._listen_for_packet(
-            bytes.fromhex("03010f"), bytes.fromhex("c840")
-        )
-        if not packet_2:
-            raise TimeoutError("Timed out waiting for packet 2!")
+        ) as packets:
+            await self._send_command_unlocked(
+                cmd=bytes.fromhex(CMD_STATUS_UPDATE),
+                payload=bytes.fromhex(PAYLOAD_STATUS_UPDATE),
+            )
+            try:
+                async with asyncio.timeout(_STATUS_RESPONSE_TIMEOUT_SECONDS):
+                    packet_1 = await packets.get()
+                    packet_2 = await packets.get()
+            except TimeoutError as exc:
+                raise TimeoutError("Timed out waiting for status packets!") from exc
 
         # We need to ignore the first byte of each packet with these types
         new_payload = packet_1[1:] + packet_2[1:]

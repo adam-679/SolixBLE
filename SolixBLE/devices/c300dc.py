@@ -4,6 +4,7 @@
 
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -44,6 +45,7 @@ MAX_TIMER_SECONDS = 86100
 DEVICE_TIMEOUT_MINUTES = (0, 30, 60, 120, 240, 360, 720, 1440)
 
 _LOGGER = logging.getLogger(__name__)
+_STATUS_RESPONSE_TIMEOUT_SECONDS = 2
 
 
 class C300DC(SolixBLEDevice):
@@ -56,6 +58,10 @@ class C300DC(SolixBLEDevice):
     """
 
     _EXPECTED_TELEMETRY_LENGTH: int = 253
+
+    def __init__(self, ble_device) -> None:
+        super().__init__(ble_device)
+        self._status_update_lock = asyncio.Lock()
 
     @property
     def dc_timer_remaining(self) -> int:
@@ -432,22 +438,20 @@ class C300DC(SolixBLEDevice):
         :raises BleakError: If command transmission fails.
         :returns: Dictionary containing telemetry parameters.
         """
-        await self._send_command(
-            cmd=bytes.fromhex("4040"),
-            payload=bytes.fromhex("a10121"),
-        )
-
-        packet_1 = await self._listen_for_packet(
-            bytes.fromhex("03010f"), bytes.fromhex("c840")
-        )
-        if not packet_1:
-            raise TimeoutError("Timed out waiting for packet 1!")
-
-        packet_2 = await self._listen_for_packet(
-            bytes.fromhex("03010f"), bytes.fromhex("c840")
-        )
-        if not packet_2:
-            raise TimeoutError("Timed out waiting for packet 2!")
+        async with self._status_update_lock:
+            async with self._packet_inbox(
+                bytes.fromhex("03010f"), bytes.fromhex("c840")
+            ) as packets:
+                await self._send_command(
+                    cmd=bytes.fromhex("4040"),
+                    payload=bytes.fromhex("a10121"),
+                )
+                try:
+                    async with asyncio.timeout(_STATUS_RESPONSE_TIMEOUT_SECONDS):
+                        packet_1 = await packets.get()
+                        packet_2 = await packets.get()
+                except TimeoutError as exc:
+                    raise TimeoutError("Timed out waiting for status packets!") from exc
 
         # We need to ignore the first byte of each packet with these types
         new_payload = packet_1[1:] + packet_2[1:]

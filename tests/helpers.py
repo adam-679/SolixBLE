@@ -111,6 +111,13 @@ class MockDevice:
             # Set functions/properties
             mock_bleak_client.write_gatt_char.side_effect = self.write_gatt_char
             mock_bleak_client.start_notify.side_effect = self.start_notify
+            command_characteristic = mock.Mock()
+            command_characteristic.properties = ["write", "write-without-response"]
+            command_characteristic.max_write_without_response_size = 20
+            mock_bleak_client.services = mock.Mock()
+            mock_bleak_client.services.get_characteristic.return_value = (
+                command_characteristic
+            )
             type(mock_bleak_client).is_connected = mock.PropertyMock(
                 side_effect=lambda: self._is_connected
             )

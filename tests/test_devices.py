@@ -45,9 +45,13 @@ class ConnectedClient:
 
     def __init__(self) -> None:
         self.writes: list[tuple[str, bytes]] = []
+        self.responses: list[bool] = []
 
-    async def write_gatt_char(self, char_specifier: str, data: bytes) -> None:
+    async def write_gatt_char(
+        self, char_specifier: str, data: bytes, response: bool = False
+    ) -> None:
         self.writes.append((char_specifier, data))
+        self.responses.append(response)
 
 
 C1000_TEST_SECRET = bytes.fromhex(
@@ -102,17 +106,18 @@ async def assert_c300dc_command(action, cmd_hex: str, payload_hex: str) -> None:
 async def test_c300dc_get_status_update() -> None:
     """Test C300DC status update requests and parses the expected packets."""
     device = C300DC(MOCK_BLE_DEVICE)
+    client = ConnectedClient()
+    device._client = client
     sent: dict[str, bytes] = {}
-    listens: list[tuple[bytes, bytes]] = []
-    packets = [b"\x01packet_1", b"\x02packet_2"]
 
     async def fake_send_command(cmd: bytes, payload: bytes) -> None:
         sent["cmd"] = cmd
         sent["payload"] = payload
-
-    async def fake_listen_for_packet(prefix: bytes, cmd: bytes) -> bytes:
-        listens.append((prefix, cmd))
-        return packets.pop(0)
+        for packet_payload in (b"\x01packet_1", b"\x02packet_2"):
+            packet = device._build_packet(
+                bytes.fromhex("03010f"), bytes.fromhex("c840"), packet_payload
+            )
+            await device._process_notification(client, 0, packet)
 
     def fake_decrypt_payload(payload: bytes) -> bytes:
         assert payload == b"packet_1packet_2"
@@ -123,17 +128,13 @@ async def test_c300dc_get_status_update() -> None:
         return {"a1": b"1"}
 
     device._send_command = fake_send_command
-    device._listen_for_packet = fake_listen_for_packet
     device._decrypt_payload = fake_decrypt_payload
     device._parse_payload = fake_parse_payload
 
     assert await device.get_status_update() == {"a1": b"1"}
     assert sent["cmd"].hex() == "4040"
     assert sent["payload"].hex() == "a10121"
-    assert listens == [
-        (bytes.fromhex("03010f"), bytes.fromhex("c840")),
-        (bytes.fromhex("03010f"), bytes.fromhex("c840")),
-    ]
+    assert not device._packet_inboxes
 
 
 @pytest.mark.asyncio
@@ -1576,36 +1577,40 @@ async def test_c1000_status_updates_are_serialized() -> None:
     device._client = client
     device._shared_secret = C1000_TEST_SECRET
     device._negotiation_timestamp = 100.0
-    first_packet_requested = asyncio.Event()
-    release_first_packet = asyncio.Event()
-    listen_calls = 0
+    first_write_started = asyncio.Event()
+    release_first_packets = asyncio.Event()
+    send_calls = 0
 
-    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
-        nonlocal listen_calls
-        listen_calls += 1
-        if listen_calls == 1:
-            first_packet_requested.set()
-            await release_first_packet.wait()
-        return b"\x00"
+    async def send_command_unlocked(cmd: bytes, payload: bytes) -> None:
+        nonlocal send_calls
+        send_calls += 1
+        if send_calls == 1:
+            first_write_started.set()
+            await release_first_packets.wait()
+        for packet_payload in (b"\x00", b"\x00"):
+            packet = device._build_packet(
+                bytes.fromhex("03010f"), bytes.fromhex("c840"), packet_payload
+            )
+            await device._process_notification(client, 0, packet)
 
-    device._listen_for_packet = listen_for_packet
+    device._send_command_unlocked = send_command_unlocked
     device._decrypt_payload = lambda payload: bytes.fromhex("dc020103")
 
     first = asyncio.create_task(device.get_status_update())
-    await asyncio.wait_for(first_packet_requested.wait(), timeout=1)
-    assert len(client.writes) == 1
+    await asyncio.wait_for(first_write_started.wait(), timeout=1)
+    assert send_calls == 1
 
     second = asyncio.create_task(device.get_status_update())
     await asyncio.sleep(0.01)
-    assert len(client.writes) == 1
+    assert send_calls == 1
 
-    release_first_packet.set()
+    release_first_packets.set()
     first_result, second_result = await asyncio.gather(first, second)
 
-    assert len(client.writes) == 2
-    assert listen_calls == 4
+    assert send_calls == 2
     assert first_result["dc"] == bytes.fromhex("0103")
     assert second_result["dc"] == bytes.fromhex("0103")
+    assert not device._packet_inboxes
 
 
 @pytest.mark.asyncio
@@ -1616,36 +1621,36 @@ async def test_c1000_command_waits_for_status_update_transaction() -> None:
     device._client = client
     device._shared_secret = C1000_TEST_SECRET
     device._negotiation_timestamp = 100.0
-    first_packet_requested = asyncio.Event()
-    release_first_packet = asyncio.Event()
-    listen_calls = 0
+    first_status_started = asyncio.Event()
+    release_status_packets = asyncio.Event()
+    sent_commands: list[bytes] = []
 
-    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
-        nonlocal listen_calls
-        listen_calls += 1
-        if listen_calls == 1:
-            first_packet_requested.set()
-            await release_first_packet.wait()
-        return b"\x00"
+    async def send_command_unlocked(cmd: bytes, payload: bytes) -> None:
+        sent_commands.append(cmd)
+        if cmd == bytes.fromhex("4040"):
+            first_status_started.set()
+            await release_status_packets.wait()
+            for packet_payload in (b"\x00", b"\x00"):
+                packet = device._build_packet(
+                    bytes.fromhex("03010f"), bytes.fromhex("c840"), packet_payload
+                )
+                await device._process_notification(client, 0, packet)
 
-    device._listen_for_packet = listen_for_packet
+    device._send_command_unlocked = send_command_unlocked
     device._decrypt_payload = lambda payload: bytes.fromhex("dc020103")
 
     status_update = asyncio.create_task(device.get_status_update())
-    await asyncio.wait_for(first_packet_requested.wait(), timeout=1)
-    assert len(client.writes) == 1
+    await asyncio.wait_for(first_status_started.wait(), timeout=1)
+    assert sent_commands == [bytes.fromhex("4040")]
 
     command = asyncio.create_task(device.set_light_mode(LightStatus.LOW))
     await asyncio.sleep(0.01)
-    assert len(client.writes) == 1
+    assert sent_commands == [bytes.fromhex("4040")]
 
-    release_first_packet.set()
+    release_status_packets.set()
     await asyncio.gather(status_update, command)
 
-    assert len(client.writes) == 2
-    _, command_packet = client.writes[1]
-    _, cmd, _ = device._split_packet(command_packet)
-    assert cmd == bytes.fromhex("404f")
+    assert sent_commands == [bytes.fromhex("4040"), bytes.fromhex("404f")]
 
 
 @pytest.mark.asyncio
@@ -1691,6 +1696,131 @@ async def test_completed_status_response_future_is_ignored_as_stale_fragment(
     assert pattern + cmd not in device._packet_futures
     assert future.result() == bytes.fromhex("00")
     assert "Ignoring unclaimed status response fragment" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_packet_inbox_collects_fifo_before_first_read() -> None:
+    """Test multi-fragment responses are retained FIFO even when they arrive immediately."""
+    client = ConnectedClient()
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    pattern = bytes.fromhex("03010f")
+    cmd = bytes.fromhex("c840")
+
+    async with device._packet_inbox(pattern, cmd) as packets:
+        for payload in (bytes.fromhex("01"), bytes.fromhex("02")):
+            packet = device._build_packet(pattern, cmd, payload)
+            await device._process_notification(client, 0, packet)
+
+        assert await packets.get() == bytes.fromhex("01")
+        assert await packets.get() == bytes.fromhex("02")
+
+    assert pattern + cmd not in device._packet_inboxes
+
+
+@pytest.mark.asyncio
+async def test_packet_inbox_cleans_up_on_cancelled_wait() -> None:
+    """Test cancellation propagates and removes an active packet inbox."""
+    device = C1000(MOCK_BLE_DEVICE)
+    pattern = bytes.fromhex("03010f")
+    cmd = bytes.fromhex("c840")
+
+    async def wait_for_packet() -> None:
+        async with device._packet_inbox(pattern, cmd) as packets:
+            await packets.get()
+
+    task = asyncio.create_task(wait_for_packet())
+    await asyncio.sleep(0)
+    assert pattern + cmd in device._packet_inboxes
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert pattern + cmd not in device._packet_inboxes
+
+
+@pytest.mark.asyncio
+async def test_listen_for_packet_reraises_cancellation() -> None:
+    """Test single-packet listeners do not convert cancellation into timeouts."""
+    device = C1000(MOCK_BLE_DEVICE)
+    pattern = bytes.fromhex("03010f")
+    cmd = bytes.fromhex("c840")
+
+    task = asyncio.create_task(device._listen_for_packet(pattern, cmd))
+    await asyncio.sleep(0)
+    assert pattern + cmd in device._packet_futures
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert pattern + cmd not in device._packet_futures
+
+
+class CommandCharacteristic:
+    """Minimal command characteristic for write-mode tests."""
+
+    def __init__(
+        self, properties: list[str], max_write_without_response_size: int | None = None
+    ) -> None:
+        self.properties = properties
+        self.max_write_without_response_size = max_write_without_response_size
+
+
+class CommandServices:
+    """Minimal service collection for write-mode tests."""
+
+    def __init__(self, characteristic: CommandCharacteristic) -> None:
+        self.characteristic = characteristic
+
+    def get_characteristic(self, uuid: str) -> CommandCharacteristic:
+        return self.characteristic
+
+
+@pytest.mark.asyncio
+async def test_command_write_mode_prefers_response_when_write_is_available() -> None:
+    """Test encrypted command writes pass an explicit response=True."""
+    client = ConnectedClient()
+    client.services = CommandServices(
+        CommandCharacteristic(["write", "write-without-response"], 20)
+    )
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._resolve_command_write_mode()
+
+    await device._write_command_packet(bytes.fromhex("ff09000003000f404f00"))
+
+    assert client.responses == [True]
+
+
+@pytest.mark.asyncio
+async def test_command_write_mode_uses_no_response_only_without_write() -> None:
+    """Test no-response is selected only when response writes are unavailable."""
+    client = ConnectedClient()
+    client.services = CommandServices(CommandCharacteristic(["write-without-response"], 20))
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._resolve_command_write_mode()
+
+    await device._write_command_packet(bytes.fromhex("ff09000003000f404f00"))
+
+    assert client.responses == [False]
+
+
+@pytest.mark.asyncio
+async def test_oversize_no_response_command_fails_before_write() -> None:
+    """Test no-response writes reject packets larger than the characteristic limit."""
+    client = ConnectedClient()
+    client.services = CommandServices(CommandCharacteristic(["write-without-response"], 4))
+    device = C1000(MOCK_BLE_DEVICE)
+    device._client = client
+    device._resolve_command_write_mode()
+
+    with pytest.raises(Exception, match="exceeds max write-without-response size"):
+        await device._write_command_packet(bytes.fromhex("ff09000003000f404f00"))
+
+    assert client.writes == []
 
 
 @pytest.mark.asyncio
@@ -1758,11 +1888,18 @@ async def test_c1000_set_light_mode_confirmed(mode: LightStatus) -> None:
     device._client = client
     device._shared_secret = C1000_TEST_SECRET
     device._negotiation_timestamp = 100.0
+    send_command_unlocked = device._send_command_unlocked
 
-    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
-        return b"\x00"
+    async def status_response_after_write(cmd: bytes, payload: bytes) -> None:
+        await send_command_unlocked(cmd, payload)
+        if cmd == bytes.fromhex("4040"):
+            for packet_payload in (b"\x00", b"\x00"):
+                packet = device._build_packet(
+                    bytes.fromhex("03010f"), bytes.fromhex("c840"), packet_payload
+                )
+                await device._process_notification(client, 0, packet)
 
-    device._listen_for_packet = listen_for_packet
+    device._send_command_unlocked = status_response_after_write
     device._decrypt_payload = lambda payload: bytes([0xDC, 0x02, 0x01, mode.value])
 
     assert await device.set_light_mode_confirmed(mode) is True
@@ -1784,11 +1921,18 @@ async def test_c1000_set_light_mode_confirmed_mismatch() -> None:
     device._client = client
     device._shared_secret = C1000_TEST_SECRET
     device._negotiation_timestamp = 100.0
+    send_command_unlocked = device._send_command_unlocked
 
-    async def listen_for_packet(pattern: bytes, cmd: bytes, timeout: int = 10) -> bytes:
-        return b"\x00"
+    async def status_response_after_write(cmd: bytes, payload: bytes) -> None:
+        await send_command_unlocked(cmd, payload)
+        if cmd == bytes.fromhex("4040"):
+            for packet_payload in (b"\x00", b"\x00"):
+                packet = device._build_packet(
+                    bytes.fromhex("03010f"), bytes.fromhex("c840"), packet_payload
+                )
+                await device._process_notification(client, 0, packet)
 
-    device._listen_for_packet = listen_for_packet
+    device._send_command_unlocked = status_response_after_write
     device._decrypt_payload = lambda payload: bytes(
         [0xDC, 0x02, 0x01, LightStatus.LOW.value]
     )
